@@ -35,7 +35,6 @@ class MessageType:
     SUBMIT_JOB = "submit_job"
     GET_JOB_STATUS = "get_job_status"
     REGISTER_WORKER = "register_worker"
-    GET_NEXT_JOB = "get_next_job"
     UPDATE_JOB_PROGRESS = "update_job_progress"
     COMPLETE_JOB = "complete_job"
     FAIL_JOB = "fail_job"
@@ -45,9 +44,11 @@ class MessageType:
     
     # Worker Status Messages
     WORKER_HEARTBEAT = "worker_heartbeat"
+    # HEARTBEAT = "heartbeat"  # Legacy type removed
+    WORKER_STATUS = "worker_status"
     CLAIM_JOB = "claim_job"
     JOB_CLAIMED = "job_claimed"
-    SUBSCRIBE_JOB_NOTIFICATIONS = "subscribe_job_notifications"
+    # SUBSCRIBE_JOB_NOTIFICATIONS = "subscribe_job_notifications"  # Redundant type removed
 
     # Server to Client Messages
     JOB_ACCEPTED = "job_accepted"
@@ -61,6 +62,13 @@ class MessageType:
     
     # Server to Worker Notifications
     JOB_AVAILABLE = "job_available"
+    
+    # Monitor Messages
+    STAY_ALIVE = "stay_alive"
+    STAY_ALIVE_RESPONSE = "stay_alive_response"
+    
+    # Connection Messages
+    CONNECTION_ESTABLISHED = "connection_established"
 
 # Base message class
 class BaseMessage(BaseModel):
@@ -90,11 +98,6 @@ class GetJobStatusMessage(BaseMessage):
 
 class RegisterWorkerMessage(BaseMessage):
     type: str = MessageType.REGISTER_WORKER
-    machine_id: str
-    gpu_id: int
-
-class GetNextJobMessage(BaseMessage):
-    type: str = MessageType.GET_NEXT_JOB
     machine_id: str
     gpu_id: int
 
@@ -169,7 +172,6 @@ class WorkerRegisteredMessage(BaseMessage):
     worker_id: str
     status: str = "active"
 
-# Message factory for parsing incoming messages
 def parse_message(data: Dict[str, Any]) -> Optional[BaseMessage]:
     """Parse incoming message data into appropriate message model"""
     if not isinstance(data, dict) or "type" not in data:
@@ -177,52 +179,91 @@ def parse_message(data: Dict[str, Any]) -> Optional[BaseMessage]:
         return None
     
     message_type = data.get("type")
+    logger.info(f"Received message of type: {message_type}")
     
-    # Map message types to their models
-    message_models = {
-        MessageType.SUBMIT_JOB: SubmitJobMessage,
-        MessageType.GET_JOB_STATUS: GetJobStatusMessage,
-        MessageType.REGISTER_WORKER: RegisterWorkerMessage,
-        MessageType.GET_NEXT_JOB: GetNextJobMessage,
-        MessageType.UPDATE_JOB_PROGRESS: UpdateJobProgressMessage,
-        MessageType.COMPLETE_JOB: CompleteJobMessage,
-        MessageType.SUBSCRIBE_JOB: SubscribeJobMessage,
-        MessageType.SUBSCRIBE_STATS: SubscribeStatsMessage,
-        MessageType.GET_STATS: GetStatsMessage,
-        
-        # New message types for push-based notification system
-        MessageType.WORKER_HEARTBEAT: WorkerHeartbeatMessage,
-        MessageType.CLAIM_JOB: ClaimJobMessage,
-        MessageType.SUBSCRIBE_JOB_NOTIFICATIONS: SubscribeJobNotificationsMessage,
-    }
+    # Simply log the raw message data without any parsing
+    print(f"\n\n***** PROCESSING RAW MESSAGE *****")
+    print(f"***** MESSAGE TYPE: {message_type} *****")
+    print(f"***** MESSAGE DATA: {json.dumps(data, indent=2)} *****")
+    print("*************************************\n\n")
     
-    if message_type not in message_models:
-        logger.error(f"Unknown message type: {message_type}")
-        return None
+    # For submit_job messages
+    if message_type == MessageType.SUBMIT_JOB:
+        try:
+            # Create a minimal SubmitJobMessage with just the essential fields
+            result = SubmitJobMessage(
+                type=MessageType.SUBMIT_JOB,
+                job_type=data.get("job_type", "unknown"),
+                priority=data.get("priority", 0),
+                payload=data.get("payload", {})
+            )
+            logger.info(f"Created submit_job message: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Error creating submit_job message: {str(e)}")
+            return None
     
-    try:
-        # Add detailed logging for subscription messages
-        if message_type == MessageType.SUBSCRIBE_JOB_NOTIFICATIONS:
-            logger.info(f"\n\n🔎🔎🔎 PARSING SUBSCRIBE_JOB_NOTIFICATIONS MESSAGE: {data}")
-            logger.info(f"🔎 FULL MESSAGE CONTENT: {json.dumps(data, indent=2)}")
-            logger.info(f"🔎 Data keys: {list(data.keys())}")
-            logger.info(f"🔎 worker_id present: {'worker_id' in data}")
-            if 'worker_id' in data:
-                logger.info(f"🔎 worker_id value: {data['worker_id']}")
-            logger.info(f"🔎 Message type value: {data.get('type')}")
-            logger.info(f"🔎 Expected type value: {MessageType.SUBSCRIBE_JOB_NOTIFICATIONS}")
-            
-        return message_models[message_type](**data)
-    except Exception as e:
-        logger.error(f"Error parsing message of type {message_type}: {str(e)}")
-        # For subscription messages, log more details about the error
-        if message_type == MessageType.SUBSCRIBE_JOB_NOTIFICATIONS:
-            logger.error(f"🔴 Failed to parse subscription message. FULL DATA: {json.dumps(data, indent=2)}")
-            logger.error(f"🔴 Expected model: {message_models[message_type].__name__}")
-            logger.error(f"🔴 Error details: {str(e)}")
-            # Print the exact validation error with full context
-            import traceback
-            logger.error(f"🔴 Error traceback: {traceback.format_exc()}")
+    # For get_job_status messages
+    elif message_type == MessageType.GET_JOB_STATUS:
+        try:
+            result = GetJobStatusMessage(
+                type=MessageType.GET_JOB_STATUS,
+                job_id=data.get("job_id", "")
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error creating get_job_status message: {str(e)}")
+            return None
+    
+    # For subscribe_job messages
+    elif message_type == MessageType.SUBSCRIBE_JOB:
+        try:
+            result = SubscribeJobMessage(
+                type=MessageType.SUBSCRIBE_JOB,
+                job_id=data.get("job_id", "")
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error creating subscribe_job message: {str(e)}")
+            return None
+    
+    # For subscribe_stats messages
+    elif message_type == MessageType.SUBSCRIBE_STATS:
+        try:
+            result = SubscribeStatsMessage(
+                type=MessageType.SUBSCRIBE_STATS
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error creating subscribe_stats message: {str(e)}")
+            return None
+    
+    # For get_stats messages
+    elif message_type == MessageType.GET_STATS:
+        try:
+            result = GetStatsMessage(
+                type=MessageType.GET_STATS
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error creating get_stats message: {str(e)}")
+            return None
+    
+    # For connection_established messages
+    elif message_type == MessageType.CONNECTION_ESTABLISHED:
+        try:
+            result = ConnectionEstablishedMessage(
+                type=MessageType.CONNECTION_ESTABLISHED,
+                message=data.get("message", "Connection established")
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error creating connection_established message: {str(e)}")
+            return None
+    
+    # For other message types, return None
+    else:
+        logger.warning(f"Unhandled message type: {message_type}")
         return None
 
 # Simple stats models (basic versions for core functionality)
@@ -244,6 +285,16 @@ class WorkerHeartbeatMessage(BaseMessage):
     status: Optional[str] = "idle"
     load: Optional[float] = 0.0
     
+# Legacy Worker Heartbeat Message removed - use WorkerHeartbeatMessage instead
+    
+# Worker Status Message
+class WorkerStatusMessage(BaseMessage):
+    type: str = MessageType.WORKER_STATUS
+    worker_id: str
+    status: Optional[str] = "idle"
+    capabilities: Optional[Dict[str, Any]] = None
+    timestamp: Optional[float] = Field(default_factory=time.time)
+    
 class ClaimJobMessage(BaseMessage):
     type: str = MessageType.CLAIM_JOB
     worker_id: str
@@ -258,11 +309,18 @@ class JobClaimedMessage(BaseMessage):
     job_data: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
     
-class SubscribeJobNotificationsMessage(BaseMessage):
-    type: str = MessageType.SUBSCRIBE_JOB_NOTIFICATIONS
-    worker_id: str
-    enabled: bool = True
+# SubscribeJobNotificationsMessage removed - workers automatically receive job notifications
     
+# Monitor Messages
+class StayAliveMessage(BaseMessage):
+    type: str = MessageType.STAY_ALIVE
+    monitor_id: str
+    timestamp: float = Field(default_factory=time.time)
+
+class StayAliveResponseMessage(BaseMessage):
+    type: str = MessageType.STAY_ALIVE_RESPONSE
+    timestamp: float = Field(default_factory=time.time)
+
 # Job Notification Messages
 class JobAvailableMessage(BaseMessage):
     type: str = MessageType.JOB_AVAILABLE
@@ -270,3 +328,8 @@ class JobAvailableMessage(BaseMessage):
     job_type: str
     priority: Optional[int] = 0
     params_summary: Optional[Dict[str, Any]] = None
+
+# Connection Messages
+class ConnectionEstablishedMessage(BaseMessage):
+    type: str = MessageType.CONNECTION_ESTABLISHED
+    message: str = "Connection established"

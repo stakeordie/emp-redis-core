@@ -166,44 +166,7 @@ class RedisService:
         job_data["position"] = position if position is not None else -1
         return job_data
     
-    def get_next_job(self, worker_id: str) -> Optional[Dict[str, Any]]:
-        """Get the next job for processing"""
-        # First check priority queue
-        priority_job_id = self.client.zrevrange(PRIORITY_QUEUE, 0, 0)
-        if priority_job_id:
-            job_id = priority_job_id[0]
-            self.client.zrem(PRIORITY_QUEUE, job_id)
-        else:
-            # Then check standard queue
-            job_id = self.client.rpop(STANDARD_QUEUE)
-        
-        if not job_id:
-            # No jobs available
-            return None
-        
-        # Get job details
-        job_key = f"{JOB_PREFIX}{job_id}"
-        job_data = self.client.hgetall(job_key)
-        
-        if not job_data:
-            logger.error(f"Job {job_id} not found in Redis")
-            return None
-        
-        # Update job status
-        self.client.hset(job_key, "status", "processing")
-        self.client.hset(job_key, "started_at", time.time())
-        self.client.hset(job_key, "worker", worker_id)
-        
-        # Parse params back to dict
-        if "params" in job_data:
-            job_data["params"] = json.loads(job_data["params"])
-        
-        logger.info(f"Assigned job {job_id} to worker {worker_id}")
-        
-        # Publish job assignment event
-        self.publish_job_update(job_id, "processing", worker_id=worker_id)
-        
-        return job_data
+    # get_next_job method removed - legacy code
     
     def update_job_progress(self, job_id: str, progress: int, worker_id: str, message: Optional[str] = None) -> bool:
         """Update job progress"""
@@ -406,6 +369,25 @@ class RedisService:
         logger.info(f"Updated worker {worker_id} status from {current_status} to {status}")
         
         return True
+        
+    def update_worker_capabilities(self, worker_id: str, capabilities: Dict[str, Any]) -> bool:
+        """Update worker capabilities"""
+        worker_key = f"{WORKER_PREFIX}{worker_id}"
+        
+        # Check if worker exists
+        if not self.client.exists(worker_key):
+            logger.error(f"Worker {worker_id} not found in Redis")
+            return False
+        
+        # Convert capabilities dict to JSON string
+        capabilities_json = json.dumps(capabilities)
+        
+        # Update capabilities in the worker hash
+        self.client.hset(worker_key, "capabilities", capabilities_json)
+        
+        logger.info(f"Updated capabilities for worker {worker_id}")
+        
+        return True
     
     def get_worker_info(self, worker_id: str) -> Optional[Dict[str, Any]]:
         """Get information about a worker"""
@@ -556,25 +538,24 @@ class RedisService:
         return stale_count
         
     def notify_idle_workers_of_job(self, job_id: str, job_type: str, params: Dict[str, Any] = None) -> List[str]:
-        """Notify idle workers about an available job"""
-        # Find idle workers
-        idle_workers = []
-        worker_keys = self.client.keys(f"{WORKER_PREFIX}*")
+        """
+        Notify idle workers about an available job.
         
-        # First mark stale workers as out_of_service
-        self.mark_stale_workers_out_of_service()
+        This method uses the workers:idle Redis set to find all idle workers
+        and notify them about an available job. It does not perform any heartbeat
+        checks or worker health monitoring, as those concerns are handled by
+        separate background processes.
         
-        for worker_key in worker_keys:
-            worker_id = worker_key.replace(f"{WORKER_PREFIX}", "")
-            worker_status = self.client.hget(worker_key, "status")
-            last_heartbeat = float(self.client.hget(worker_key, "last_heartbeat") or 0)
+        Args:
+            job_id: Unique identifier for the job
+            job_type: Type of job to be processed
+            params: Optional job parameters
             
-            # Check if worker is idle and has recent heartbeat (last 30 seconds)
-            # Explicitly exclude out_of_service workers
-            if (worker_status == "idle" and 
-                worker_status != "out_of_service" and
-                (time.time() - last_heartbeat) < 30):
-                idle_workers.append(worker_id)
+        Returns:
+            List[str]: List of worker IDs that were notified
+        """
+        # Get all idle workers directly from the Redis set
+        idle_workers = self.client.smembers("workers:idle")
         
         # Publish notification to job channel
         notification = {
@@ -589,7 +570,7 @@ class RedisService:
         self.client.publish("job_notifications", json.dumps(notification))
         
         logger.info(f"Notified {len(idle_workers)} idle workers about job {job_id}")
-        return idle_workers
+        return list(idle_workers)
     
     def claim_job(self, job_id: str, worker_id: str, claim_timeout: int = 30) -> Optional[Dict[str, Any]]:
         """Atomically claim a job with a timeout"""

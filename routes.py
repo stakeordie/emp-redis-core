@@ -7,6 +7,7 @@ import uuid
 import time
 from typing import Dict, Any, Optional, List, Union
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from websockets.exceptions import ConnectionClosedError
 
 from .models import (
     MessageType, parse_message, 
@@ -14,7 +15,8 @@ from .models import (
     UpdateJobProgressMessage, CompleteJobMessage, GetStatsMessage, SubscribeStatsMessage,
     SubscribeJobMessage, JobAcceptedMessage, JobStatusMessage, JobUpdateMessage, JobAssignedMessage,
     JobCompletedMessage, ErrorMessage, WorkerRegisteredMessage, WorkerHeartbeatMessage, ClaimJobMessage,
-    SubscribeJobNotificationsMessage, JobClaimedMessage, JobAvailableMessage
+    SubscribeJobNotificationsMessage, JobClaimedMessage, JobAvailableMessage,
+    WorkerLegacyHeartbeatMessage, WorkerStatusMessage
 )
 from .connections import ConnectionManager
 from .redis_service import RedisService, STANDARD_QUEUE, PRIORITY_QUEUE
@@ -44,11 +46,19 @@ async def broadcast_stats_task():
                 print(f"\n\n====== STATS BROADCAST CYCLE #{broadcast_counter} ======")
                 print(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             
-            # Skip if no clients are subscribed
+            # Check if there are any clients subscribed or monitors connected
             subscribers_count = len(connection_manager.stats_subscriptions)
-            if subscribers_count == 0:
+            monitors_count = len(connection_manager.monitor_connections)
+            
+            # Log the counts for debugging
+            if broadcast_counter % 10 == 0:  # Only log every 10 cycles
+                print(f"Stats broadcast: {subscribers_count} clients subscribed, {monitors_count} monitors connected")
+                logger.debug(f"Stats broadcast: {subscribers_count} clients subscribed, {monitors_count} monitors connected")
+            
+            # Skip if no clients are subscribed AND no monitors are connected
+            if subscribers_count == 0 and monitors_count == 0:
                 if broadcast_counter % 10 == 0:  # Only log every 10 cycles
-                    logger.debug("No clients subscribed to stats updates, skipping broadcast")
+                    logger.debug("No clients subscribed and no monitors connected, skipping broadcast")
                 await asyncio.sleep(3)  # Check less frequently if no subscribers
                 continue
                 
@@ -235,28 +245,43 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
                 try:
                     message_data = json.loads(message_text)
                     logger.debug(f"Received message from client {client_id}: {message_data}")
-                    message = parse_message(message_data)
                     
-                    if not message:
-                        logger.error(f"Invalid message received from client {client_id}")
-                        error_message = ErrorMessage(error="Invalid message format")
+                    # Add more detailed logging for debugging job submissions
+                    print(f"\n🔍 PARSED MESSAGE DATA: {json.dumps(message_data, indent=2)}")
+                    print(f"🔍 MESSAGE TYPE: {message_data.get('type', 'NO_TYPE_FOUND')}")
+                    
+                    # Skip Pydantic model conversion and work directly with the parsed JSON data
+                    message_type = message_data.get('type')
+                    
+                    if not message_type:
+                        logger.error(f"Invalid message received from client {client_id} - missing type")
+                        error_message = ErrorMessage(error="Invalid message format - missing type")
                         await connection_manager.send_to_client(client_id, error_message)
                         continue
-                        
+                    
                     # Process message based on type
-                    if message.type == MessageType.SUBMIT_JOB:
-                        await handle_submit_job(client_id, message)
-                    elif message.type == MessageType.GET_JOB_STATUS:
-                        await handle_get_job_status(client_id, message)
-                    elif message.type == MessageType.SUBSCRIBE_JOB:
-                        handle_subscribe_job(client_id, message)
-                    elif message.type == MessageType.SUBSCRIBE_STATS:
-                        handle_subscribe_stats(client_id, message)
-                    elif message.type == MessageType.GET_STATS:
+                    print(f"\n🔵 PROCESSING MESSAGE OF TYPE: {message_type}")
+                    print(f"🔵 EXPECTED SUBMIT_JOB TYPE: {MessageType.SUBMIT_JOB}")
+                    print(f"🔵 TYPE COMPARISON: {message_type == MessageType.SUBMIT_JOB}")
+                    
+                    if message_type == MessageType.SUBMIT_JOB:
+                        print(f"\n🚀 HANDLING JOB SUBMISSION FROM CLIENT: {client_id}")
+                        print(f"🚀 JOB TYPE: {message_data.get('job_type', 'unknown')}")
+                        print(f"🚀 PRIORITY: {message_data.get('priority', 0)}")
+                        await handle_submit_job(client_id, message_data)
+                    elif message_type == MessageType.GET_JOB_STATUS:
+                        job_id = message_data.get('job_id', '')
+                        await handle_get_job_status(client_id, job_id)
+                    elif message_type == MessageType.SUBSCRIBE_JOB:
+                        job_id = message_data.get('job_id', '')
+                        handle_subscribe_job(client_id, job_id)
+                    elif message_type == MessageType.SUBSCRIBE_STATS:
+                        handle_subscribe_stats(client_id)
+                    elif message_type == MessageType.GET_STATS:
                         await handle_get_stats(client_id)
                     else:
-                        logger.warning(f"Unhandled message type from client: {message.type}")
-                        error_message = ErrorMessage(error=f"Unsupported message type: {message.type}")
+                        logger.warning(f"Unhandled message type from client: {message_type}")
+                        error_message = ErrorMessage(error=f"Unsupported message type: {message_type}")
                         await connection_manager.send_to_client(client_id, error_message)
                         
                 except json.JSONDecodeError:
@@ -283,21 +308,29 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
         print(f"\n\n==== MONITOR CONNECTION ATTEMPT: {monitor_id} ====\n")
         logger.info(f"New monitor WebSocket connection attempt: {monitor_id}")
         
+        # Log current connection state
+        print(f"Current monitor connections: {list(connection_manager.monitor_connections.keys())}")
+        print(f"Total monitor connections: {len(connection_manager.monitor_connections)}")
+        
         # Accept the connection
         try:
             await websocket.accept()
-            connection_manager.connect_monitor(monitor_id, websocket)
+            await connection_manager.connect_monitor(websocket, monitor_id)
             logger.info(f"Monitor WebSocket connected successfully: {monitor_id}")
             
             # Send an immediate welcome message
             welcome_message = {"type": "connection_established", "message": f"Welcome Monitor {monitor_id}! Connected to Redis Hub"}
+            print(f"Sending welcome message to monitor {monitor_id}...")
             await websocket.send_text(json.dumps(welcome_message))
+            print(f"Welcome message sent to monitor {monitor_id} successfully")
             
             print(f"\n==== MONITOR CONNECTED: {monitor_id} ====\n")
             
             # Send initial system status using the enhanced method
             # This will include detailed worker status from Redis
+            print(f"Sending initial system status to monitor {monitor_id}...")
             await connection_manager.send_system_status_to_monitors(redis_service)
+            print(f"Initial system status sent to monitor {monitor_id}")
             
         except Exception as e:
             logger.error(f"Error accepting monitor connection {monitor_id}: {str(e)}")
@@ -329,15 +362,19 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
                     elif message_type == "get_system_status":
                         # Send immediate system status update using the enhanced method
                         # This will include detailed worker status from Redis
+                        print(f"Sending requested system status update to monitor {monitor_id}...")
                         await connection_manager.send_system_status_to_monitors(redis_service)
+                        print(f"Requested system status update sent to monitor {monitor_id}")
                         logger.debug(f"Sent immediate system status update to monitor {monitor_id}")
-                    elif message_type == "heartbeat":
-                        # Respond to heartbeat to keep connection alive
+                    elif message_type == "stay_alive":
+                        # Respond to stay_alive to keep connection alive
+                        print(f"Received stay_alive from monitor {monitor_id}, sending response...")
                         await websocket.send_text(json.dumps({
-                            "type": "heartbeat_response",
+                            "type": "stay_alive_response",
                             "timestamp": time.time()
                         }))
-                        logger.debug(f"Received heartbeat from monitor {monitor_id} and sent response")
+                        print(f"Stay-alive response sent to monitor {monitor_id}")
+                        logger.debug(f"Received stay_alive from monitor {monitor_id} and sent response")
                     else:
                         logger.warning(f"Unhandled message type from monitor: {message_type}")
                         await websocket.send_text(json.dumps({
@@ -372,24 +409,48 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
         """WebSocket endpoint for workers"""
         # Print more visible connection logs
         print(f"\n\n==== WORKER CONNECTION ATTEMPT: {worker_id} ====\n")
+        print(f"Worker connection details: {websocket}")
         logger.info(f"New worker WebSocket connection attempt: {worker_id}")
         
         # Accept the connection
         try:
+            # Log the connection state before accepting
+            print(f"[WORKER-CONN] WebSocket state before accept: {websocket.client_state}")
             logger.debug(f"[WORKER-CONN] Accepting WebSocket connection for worker {worker_id}")
+            
+            # Accept the connection
             await websocket.accept()
+            print(f"[WORKER-CONN] WebSocket connection accepted for worker {worker_id}")
+            
+            # Store the connection
             connection_manager.worker_connections[worker_id] = websocket
             connection_manager.worker_status[worker_id] = "idle"  # Set initial status to idle
             logger.info(f"[WORKER-CONN] Worker WebSocket connected successfully: {worker_id}")
+            print(f"[WORKER-CONN] Worker {worker_id} added to connection_manager.worker_connections")
+            print(f"[WORKER-CONN] Current worker connections: {list(connection_manager.worker_connections.keys())}")
             
             # Send an immediate welcome message
             welcome_message = {"type": "connection_established", "message": f"Welcome Worker {worker_id}! Connected to Redis Hub"}
             logger.debug(f"[WORKER-CONN] Sending welcome message to worker {worker_id}")
+            print(f"[WORKER-CONN] Sending welcome message: {welcome_message}")
             await websocket.send_text(json.dumps(welcome_message))
+            print(f"[WORKER-CONN] Welcome message sent successfully")
             
             print(f"\n==== WORKER CONNECTED: {worker_id} ====\n")
+        except WebSocketDisconnect as e:
+            logger.error(f"WebSocket disconnected during worker connection setup for {worker_id}: {str(e)}")
+            print(f"[WORKER-CONN-ERROR] WebSocket disconnected during setup: {str(e)}")
+            return
+        except ConnectionClosedError as e:
+            logger.error(f"Connection closed during worker connection setup for {worker_id}: {str(e)}")
+            print(f"[WORKER-CONN-ERROR] Connection closed during setup: {str(e)}")
+            return
         except Exception as e:
             logger.error(f"Error accepting worker connection {worker_id}: {str(e)}")
+            print(f"[WORKER-CONN-ERROR] Unexpected error: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            print(f"[WORKER-CONN-ERROR] Traceback: {traceback.format_exc()}")
             return
         
         try:
@@ -419,8 +480,7 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
                     # Process message based on type
                     if message.type == MessageType.REGISTER_WORKER:
                         await handle_register_worker(worker_id, message)
-                    elif message.type == MessageType.GET_NEXT_JOB:
-                        await handle_get_next_job(worker_id, message)
+                    # GET_NEXT_JOB handler removed - legacy code
                     elif message.type == MessageType.UPDATE_JOB_PROGRESS:
                         await handle_update_job_progress(worker_id, message)
                     elif message.type == MessageType.COMPLETE_JOB:
@@ -428,17 +488,12 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
                     # New message handlers for push-based notification system
                     elif message.type == MessageType.WORKER_HEARTBEAT:
                         await handle_worker_heartbeat(worker_id, message)
+                    # HEARTBEAT handler removed - legacy code
+                    elif message.type == MessageType.WORKER_STATUS:
+                        await handle_worker_status(worker_id, message)
                     elif message.type == MessageType.CLAIM_JOB:
                         await handle_claim_job(worker_id, message)
-                    elif message.type == MessageType.SUBSCRIBE_JOB_NOTIFICATIONS:
-                        # Log the subscription attempt
-                        logger.info(f"\n\n🔍🔍🔍 SUBSCRIPTION ATTEMPT FROM WORKER: {worker_id}")
-                        logger.info(f"🔍 Message: {message}")
-                        logger.info(f"🔍 Message type: {message.type}, Message dict: {message.dict()}")
-                        
-                        # Handle the subscription - use the worker_id from the connection, not from the message
-                        # This is because the worker_id is already known from the WebSocket connection
-                        handle_subscribe_job_notifications(worker_id, message)
+                    # SUBSCRIBE_JOB_NOTIFICATIONS handler removed - redundant functionality
                     else:
                         logger.warning(f"Unhandled message type from worker: {message.type}")
                         error_message = ErrorMessage(error=f"Unsupported message type: {message.type}")
@@ -466,34 +521,41 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
             redis_service.update_worker_status(worker_id, "disconnected")
 
     # Client message handlers
-    async def handle_submit_job(client_id: str, message: SubmitJobMessage):
+    async def handle_submit_job(client_id: str, message_data: Dict[str, Any]):
         """Handle job submission from a client"""
         # Generate job ID if not provided
         job_id = f"job-{uuid.uuid4()}"
         
+        # Extract data directly from the dictionary
+        job_type = message_data.get('job_type', 'unknown')
+        priority = message_data.get('priority', 0)
+        payload = message_data.get('payload', {})
+        
         print(f"\n\n🔵🔵🔵 JOB SUBMISSION 🔵🔵🔵")
         print(f"🔵 Client: {client_id}")
         print(f"🔵 Job ID: {job_id}")
-        print(f"🔵 Job Type: {message.job_type}")
-        print(f"🔵 Priority: {message.priority}")
+        print(f"🔵 Job Type: {job_type}")
+        print(f"🔵 Priority: {priority}")
+        print(f"🔵 Message Type: {message_data.get('type')}")
+        print(f"🔵 Full Message: {json.dumps(message_data, indent=2)}")
         
         # Add job to Redis
         job_data = redis_service.add_job(
             job_id=job_id,
-            job_type=message.job_type,
-            priority=message.priority,
-            params=message.payload,
+            job_type=job_type,
+            priority=priority,
+            params=payload,
             client_id=client_id
         )
         
-        logger.info(f"[JOB-SUBMIT] New job {job_id} submitted by client {client_id} with priority {message.priority}")
+        logger.info(f"[JOB-SUBMIT] New job {job_id} submitted by client {client_id} with priority {priority}")
         
         # Create job available notification for workers
         notification = JobAvailableMessage(
             job_id=job_id,
-            job_type=message.job_type,
-            priority=message.priority,
-            params_summary=message.payload
+            job_type=job_type,
+            priority=priority,
+            params_summary=payload
         )
         
         # Send notification to idle workers and get count
@@ -516,9 +578,9 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
         print(f"🔵 Client {client_id} subscribed to job {job_id}")
         print(f"🔵🔵🔵 END JOB SUBMISSION 🔵🔵🔵\n\n")
     
-    async def handle_get_job_status(client_id: str, message: GetJobStatusMessage):
+    async def handle_get_job_status(client_id: str, job_id: str):
         """Handle job status request from a client"""
-        job_id = message.job_id
+        logger.info(f"[JOB-STATUS] Client {client_id} requested status for job {job_id}")
         
         # Get job status from Redis
         job_data = redis_service.get_job_status(job_id)
@@ -544,17 +606,15 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
         # Subscribe client to future updates for this job
         connection_manager.subscribe_to_job(job_id, client_id)
     
-    def handle_subscribe_job(client_id: str, message: SubscribeJobMessage):
+    def handle_subscribe_job(client_id: str, job_id: str):
         """Handle job subscription request from a client"""
-        job_id = message.job_id
+        logger.info(f"[JOB-SUBSCRIBE] Client {client_id} subscribed to job {job_id}")
         connection_manager.subscribe_to_job(job_id, client_id)
     
-    def handle_subscribe_stats(client_id: str, message: SubscribeStatsMessage):
+    def handle_subscribe_stats(client_id: str):
         """Handle stats subscription request from a client"""
-        if message.enabled:
-            connection_manager.subscribe_to_stats(client_id)
-        else:
-            connection_manager.unsubscribe_from_stats(client_id)
+        logger.info(f"[STATS-SUBSCRIBE] Client {client_id} subscribed to stats updates")
+        connection_manager.subscribe_to_stats(client_id)
     
     async def handle_get_stats(client_id: str):
         """Handle stats request from a client"""
@@ -582,42 +642,7 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
         logger.debug(f"[WORKER-REG] Sending registration confirmation to worker {worker_id}")
         await connection_manager.send_to_worker(worker_id, response)
     
-    async def handle_get_next_job(worker_id: str, message: GetNextJobMessage):
-        """Handle worker request for next job"""
-        # Update worker status to idle
-        redis_service.update_worker_status(worker_id, "idle")
-        
-        # Update worker heartbeat
-        redis_service.update_worker_heartbeat(worker_id)
-        
-        # Get next job from Redis
-        job_data = redis_service.get_next_job(worker_id)
-        
-        if not job_data:
-            # No job available, send empty response
-            await connection_manager.send_to_worker(worker_id, {"type": "no_job"})
-            return
-        
-        # Update worker status to active
-        redis_service.update_worker_status(worker_id, "active")
-        
-        # Create response
-        response = JobAssignedMessage(
-            job_id=job_data["id"],
-            job_type=job_data["type"],
-            priority=int(job_data.get("priority", 0)),
-            params=job_data["params"]
-        )
-        await connection_manager.send_to_worker(worker_id, response)
-        
-        # Notify client about job assignment if subscribed
-        job_id = job_data["id"]
-        update = JobUpdateMessage(
-            job_id=job_id,
-            status="processing",
-            worker_id=worker_id
-        )
-        await connection_manager.send_job_update(job_id, update)
+    # handle_get_next_job function removed - legacy code
     
     async def handle_update_job_progress(worker_id: str, message: UpdateJobProgressMessage):
         """Handle worker job progress update"""
@@ -709,12 +734,43 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
         
         if not updated:
             logger.warning(f"[WORKER-HB] Failed to update heartbeat for worker {worker_id}")
-            return
             
-        # Update worker status in connection manager
-        connection_manager.update_worker_status(worker_id, message.status)
+    # handle_legacy_heartbeat function removed - legacy code
+    # Workers should now use WORKER_HEARTBEAT message type
+
+    async def handle_worker_status(worker_id: str, message: WorkerStatusMessage):
+        """Handle worker status update messages"""
+        print(f"\n🚨🚨🚨 WORKER STATUS UPDATE RECEIVED 🚨🚨🚨")
+        print(f"🚨 Worker ID: {worker_id}")
+        print(f"🚨 Status: {message.status}")
+        logger.debug(f"[WORKER-STATUS] Received status update from worker {worker_id}, status: {message.status}")
         
-        logger.debug(f"[WORKER-HB] Updated heartbeat for worker {worker_id}, status: {message.status}")
+        # Check if worker exists in Redis
+        worker_exists = redis_service.worker_exists(worker_id)
+        print(f"🚨 Worker exists in Redis: {worker_exists}")
+        if not worker_exists:
+            logger.warning(f"[WORKER-STATUS] Worker {worker_id} not registered in Redis but sent status update")
+            # Try to register the worker with minimal info
+            worker_info = {
+                "machine_id": "unknown",
+                "gpu_id": "unknown"
+            }
+            redis_service.register_worker(worker_id, worker_info)
+            logger.info(f"[WORKER-STATUS] Auto-registered missing worker {worker_id}")
+        
+        # Update worker status in Redis
+        updated = redis_service.update_worker_status(worker_id, message.status)
+        print(f"🚨 Updated worker status in Redis: {updated}")
+        
+        if not updated:
+            logger.warning(f"[WORKER-STATUS] Failed to update status for worker {worker_id}")
+        
+        # Update worker status in connection manager
+        print(f"🚨 Calling connection_manager.update_worker_status({worker_id}, {message.status})")
+        await connection_manager.update_worker_status(worker_id, message.status)
+        print(f"🚨 Finished calling connection_manager.update_worker_status")
+        
+        logger.debug(f"[WORKER-STATUS] Updated status for worker {worker_id}, status: {message.status}")
     
     async def handle_claim_job(worker_id: str, message: ClaimJobMessage):
         """Handle job claim request from a worker"""
@@ -727,7 +783,7 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
         # Prepare response
         if job_data:
             # Update worker status to busy
-            connection_manager.update_worker_status(worker_id, "busy")
+            await connection_manager.update_worker_status(worker_id, "busy")
             redis_service.update_worker_status(worker_id, "busy")
             
             # Send successful claim response
@@ -762,14 +818,8 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
                 )
                 await connection_manager.send_to_client(client_id, update)
     
-    def handle_subscribe_job_notifications(worker_id: str, message: SubscribeJobNotificationsMessage):
-        """Handle worker subscription to job notifications"""
-        if message.enabled:
-            connection_manager.subscribe_worker_to_job_notifications(worker_id)
-            logger.info(f"Worker {worker_id} subscribed to job notifications")
-        else:
-            connection_manager.unsubscribe_worker_from_job_notifications(worker_id)
-            logger.info(f"Worker {worker_id} unsubscribed from job notifications")
+    # handle_subscribe_job_notifications function removed - redundant functionality
+    # Workers now automatically receive job notifications when idle
 
 # Redis Pub/Sub listener for job updates and notifications
 async def start_redis_listener():
@@ -993,7 +1043,7 @@ async def process_worker_update(data):
     
     # Update local worker status tracking
     if status:
-        connection_manager.update_worker_status(worker_id, status)
+        await connection_manager.update_worker_status(worker_id, status)
         
     # Broadcast worker update to all monitors
     monitor_message = {

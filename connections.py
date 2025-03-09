@@ -3,6 +3,7 @@
 import json
 import logging
 import asyncio
+import time
 from typing import Dict, Set, List, Any, Optional, Callable
 from fastapi import WebSocket
 from .models import BaseMessage, ErrorMessage
@@ -622,19 +623,31 @@ class ConnectionManager:
             
         # Add timestamp if not present
         if "timestamp" not in message_dict:
-            import time
             message_dict["timestamp"] = time.time()
             logger.debug(f"[MONITOR-MSG] Added missing timestamp to message")
+            
+        # Add message_id if not present for tracking
+        if "message_id" not in message_dict:
+            message_dict["message_id"] = f"{message_dict['type']}-{int(time.time())}"
+            logger.debug(f"[MONITOR-MSG] Added missing message_id to message: {message_dict['message_id']}")
         
         # Log the message being broadcast
         message_type = message_dict.get("type", "unknown")
-        logger.info(f"[MONITOR-MSG] Broadcasting message of type '{message_type}' to monitors")
+        logger.info(f"[MONITOR-MSG] Broadcasting message of type '{message_type}' to {len(self.monitor_connections)} monitors")
         
         # For debugging, print more details about the message
         print(f"\n\n📢📢📢 MONITOR BROADCAST 📢📢📢")
         print(f"📢 Message type: {message_type}")
         print(f"📢 Connected monitors: {list(self.monitor_connections.keys())}")
         print(f"📢 Monitor filters: {self.monitor_filters}")
+        print(f"📢 Monitor connections count: {len(self.monitor_connections)}")
+        
+        # Print detailed monitor connection states
+        for m_id, ws in self.monitor_connections.items():
+            try:
+                print(f"📢 Monitor {m_id} connection state: {ws.client_state.name}")
+            except Exception as e:
+                print(f"📢 Error getting state for monitor {m_id}: {str(e)}")
         
         # Print message content for debugging (limit size for large messages)
         message_str = str(message_dict)
@@ -651,26 +664,63 @@ class ConnectionManager:
         skipped_sends = 0
         
         # Send to all monitors
+        print(f"\n📣📣📣 BROADCASTING TO MONITORS 📣📣📣")
+        print(f"📣 Message type: {message_type}")
+        print(f"📣 Total monitors: {len(self.monitor_connections)}")
+        print(f"📣 Monitor connections: {list(self.monitor_connections.keys())}")
+        print(f"📣 Monitor filters: {self.monitor_filters}")
+        
         for monitor_id, websocket in list(self.monitor_connections.items()):
             # Check if this monitor has filters and if the message type passes the filter
             filters = self.monitor_filters.get(monitor_id, set())
+            print(f"📣 Monitor {monitor_id} filters: {filters}")
             
             # If filters exist and message type is not in filters, skip
             if filters and message_type not in filters:
-                print(f"📢 Skipping monitor {monitor_id} - message type '{message_type}' not in filters {filters}")
+                print(f"📢 SKIPPING monitor {monitor_id} - message type '{message_type}' NOT IN FILTERS {filters} ❌")
                 logger.debug(f"[MONITOR-MSG] Skipping monitor {monitor_id} - message type '{message_type}' not in filters {filters}")
                 skipped_sends += 1
                 continue
             
             print(f"📢 Sending to monitor {monitor_id}...")
             try:
+                # Check if websocket is still open
+                if websocket.client_state.name != "CONNECTED":
+                    print(f"📢 Monitor {monitor_id} websocket is not connected (state: {websocket.client_state.name}), removing connection ❌")
+                    logger.warning(f"[MONITOR-MSG] Monitor {monitor_id} websocket is not connected (state: {websocket.client_state.name}), removing connection")
+                    asyncio.create_task(self._schedule_disconnect_monitor(monitor_id))
+                    continue
+                    
+                # Send the message
+                print(f"📢 Sending message to monitor {monitor_id}...")
                 await websocket.send_text(message_json)
                 successful_sends += 1
                 print(f"📢 Successfully sent to monitor {monitor_id} ✅")
                 logger.info(f"[MONITOR-MSG] Sent {message_type} message to monitor {monitor_id}")
+                
+                # Send an acknowledgment message to confirm successful delivery
+                ack_message = {
+                    "type": "ack",
+                    "timestamp": time.time(),
+                    "message_id": f"ack-{int(time.time())}",
+                    "original_type": message_type,
+                    "original_id": message_dict.get("message_id", "unknown")
+                }
+                await websocket.send_text(json.dumps(ack_message))
+                logger.debug(f"[MONITOR-MSG] Sent acknowledgment for {message_type} message to monitor {monitor_id}")
+                
+            except RuntimeError as e:
+                print(f"📢 Runtime error sending to monitor {monitor_id}: {str(e)} ❌")
+                logger.error(f"[MONITOR-MSG] Runtime error sending message to monitor {monitor_id}: {str(e)}")
+                # Schedule disconnection for websocket errors
+                if "WebSocket is not connected" in str(e) or "Connection is closed" in str(e):
+                    print(f"📢 WebSocket for monitor {monitor_id} is closed, removing connection")
+                    asyncio.create_task(self._schedule_disconnect_monitor(monitor_id))
             except Exception as e:
                 print(f"📢 Error sending to monitor {monitor_id}: {str(e)} ❌")
                 logger.error(f"[MONITOR-MSG] Error sending message to monitor {monitor_id}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 # Schedule disconnection
                 asyncio.create_task(self._schedule_disconnect_monitor(monitor_id))
         
@@ -694,13 +744,22 @@ class ConnectionManager:
         Args:
             redis_service: Optional RedisService instance to get detailed worker status
         """
+        # Log the start of the system status update process
+        logger.info(f"[MONITOR-STATUS] Preparing system status update for {len(self.monitor_connections)} connected monitors")
+        print(f"\n\n🔄🔄🔄 SYSTEM STATUS UPDATE 🔄🔄🔄")
+        print(f"🔄 Connected monitors: {list(self.monitor_connections.keys())}")
+        
         if not self.monitor_connections:
+            logger.info(f"[MONITOR-STATUS] No monitors connected, skipping status update")
+            print(f"🔄 No monitors connected, skipping status update")
+            print(f"🔄🔄🔄 END SYSTEM STATUS UPDATE (NO MONITORS) 🔄🔄🔄\n\n")
             return
             
         # Build comprehensive status message
         status = {
             "type": "system_status",
             "timestamp": time.time(),
+            "message_id": f"status-{int(time.time())}",  # Add unique message ID for tracking
             "connections": {
                 "clients": list(self.client_connections.keys()),
                 "workers": list(self.worker_connections.keys()),
@@ -717,10 +776,15 @@ class ConnectionManager:
             }
         }
         
+        # Log the basic status structure
+        print(f"🔄 Created system status with {len(status['workers'])} workers")
+        print(f"🔄 Connections: {len(status['connections']['clients'])} clients, {len(status['connections']['workers'])} workers, {len(status['connections']['monitors'])} monitors")
+        
         # Add detailed worker status from Redis if available
         if redis_service:
             try:
                 # Get detailed worker status from Redis
+                print(f"🔄 Fetching detailed worker status from Redis service")
                 redis_workers_status = redis_service.get_all_workers_status()
                 
                 # Update the workers section with detailed information
@@ -743,12 +807,33 @@ class ConnectionManager:
                 # Add system stats
                 status["system"] = redis_service.get_stats()
                 
-                logger.debug(f"Added detailed worker status for {len(detailed_workers)} workers to system status")
+                print(f"🔄 Enhanced status with detailed information for {len(detailed_workers)} workers")
+                logger.info(f"[MONITOR-STATUS] Added detailed worker status for {len(detailed_workers)} workers to system status")
             except Exception as e:
-                logger.error(f"Error getting detailed worker status from Redis: {str(e)}")
+                print(f"🔄 ERROR getting detailed worker status from Redis: {str(e)}")
+                logger.error(f"[MONITOR-STATUS] Error getting detailed worker status from Redis: {str(e)}")
+                import traceback
+                traceback.print_exc()
+        
+        # Log the final status message structure before sending
+        status_keys = list(status.keys())
+        print(f"🔄 Final status message contains keys: {status_keys}")
+        logger.info(f"[MONITOR-STATUS] Sending system status with keys: {status_keys}")
+        
+        # Convert to string for logging (truncated for large messages)
+        status_str = str(status)
+        if len(status_str) > 1000:
+            print(f"🔄 Status content (truncated): {status_str[:500]}...{status_str[-500:]}")
+        else:
+            print(f"🔄 Status content: {status_str}")
         
         # Broadcast to all monitors
-        await self.broadcast_to_monitors(status)
+        sent_count = await self.broadcast_to_monitors(status)
+        
+        # Log the result
+        print(f"🔄 System status sent to {sent_count}/{len(self.monitor_connections)} monitors")
+        logger.info(f"[MONITOR-STATUS] System status sent to {sent_count}/{len(self.monitor_connections)} monitors")
+        print(f"🔄🔄🔄 END SYSTEM STATUS UPDATE 🔄🔄🔄\n\n")
         
     def subscribe_worker_to_job_notifications(self, worker_id: str) -> None:
         """Subscribe a worker to job notifications"""
@@ -761,11 +846,32 @@ class ConnectionManager:
             self.job_notification_subscriptions.remove(worker_id)
             logger.debug(f"Worker {worker_id} unsubscribed from job notifications")
     
-    def update_worker_status(self, worker_id: str, status: str) -> None:
-        """Update a worker's status"""
+    async def update_worker_status(self, worker_id: str, status: str) -> None:
+        """Update a worker's status and broadcast to monitors"""
+        print(f"\n🔄🔄🔄 UPDATING WORKER STATUS: {worker_id} -> {status} 🔄🔄🔄")
         if worker_id in self.worker_connections:
+            # Update status in memory
             self.worker_status[worker_id] = status
             logger.debug(f"Updated worker {worker_id} status to {status}")
+            
+            # Create worker status update message
+            status_update = {
+                "type": "worker_status",
+                "timestamp": time.time(),
+                "message_id": f"worker-status-{int(time.time())}",
+                "worker_id": worker_id,
+                "status": status
+            }
+            
+            # Log the message we're about to broadcast
+            print(f"📤 Broadcasting message: {json.dumps(status_update)}")
+            print(f"📤 Current monitor connections: {list(self.monitor_connections.keys())}")
+            
+            # Broadcast to all monitors
+            logger.info(f"Broadcasting worker {worker_id} status update ({status}) to monitors")
+            await self.broadcast_to_monitors(status_update)
+        else:
+            print(f"❌ Worker {worker_id} not found in worker_connections, cannot update status")
     
     async def notify_idle_workers(self, job_notification: Any) -> int:
         """Send job notification to idle workers subscribed to notifications"""
