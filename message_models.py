@@ -1,17 +1,215 @@
 #!/usr/bin/env python3
 # Implementation of the MessageModelsInterface
+import json
+import time
+import uuid
 from typing import Dict, Any, Optional, List, Union
-from pydantic import BaseModel
-
+from pydantic import BaseModel, Field, field_validator
 from .interfaces.message_models_interface import MessageModelsInterface
-from .models import (
-    BaseMessage, ErrorMessage, JobAcceptedMessage, JobStatusMessage,
-    JobUpdateMessage, WorkerRegisteredMessage, JobAvailableMessage,
-    JobCompletedMessage, SubmitJobMessage, GetJobStatusMessage,
-    SubscribeJobMessage, SubscribeStatsMessage, GetStatsMessage,
-    ConnectionEstablishedMessage, MessageType
-)
 from .utils.logger import logger
+
+# WebSocket message types
+class MessageType:
+    # Client to Server Messages
+    SUBMIT_JOB = "submit_job"
+    GET_JOB_STATUS = "get_job_status"
+    REGISTER_WORKER = "register_worker"
+    UPDATE_JOB_PROGRESS = "update_job_progress"
+    COMPLETE_JOB = "complete_job"
+    FAIL_JOB = "fail_job"
+    GET_STATS = "get_stats"
+    SUBSCRIBE_STATS = "subscribe_stats"
+    SUBSCRIBE_JOB = "subscribe_job"
+    
+    # Worker Status Messages
+    WORKER_HEARTBEAT = "worker_heartbeat"
+    WORKER_STATUS = "worker_status"
+    CLAIM_JOB = "claim_job"
+    JOB_CLAIMED = "job_claimed"
+    
+    # Server to Client Messages
+    JOB_ACCEPTED = "job_accepted"
+    JOB_STATUS = "job_status"
+    JOB_UPDATE = "job_update"
+    JOB_ASSIGNED = "job_assigned"
+    JOB_COMPLETED = "job_completed"
+    JOB_AVAILABLE = "job_available"
+    WORKER_REGISTERED = "worker_registered"
+    ERROR = "error"
+    STATS_RESPONSE = "stats_response"
+    
+    # Monitor Messages
+    STAY_ALIVE = "stay_alive"
+    STAY_ALIVE_RESPONSE = "stay_alive_response"
+    
+    # Connection Messages
+    CONNECTION_ESTABLISHED = "connection_established"
+
+# Base message class
+class BaseMessage(BaseModel):
+    type: str
+    timestamp: float = Field(default_factory=time.time)
+
+# Core Client to Server Messages
+class SubmitJobMessage(BaseMessage):
+    type: str = MessageType.SUBMIT_JOB
+    job_type: str
+    priority: int = 0
+    payload: Dict[str, Any]
+    
+    @field_validator('priority')
+    def validate_priority(cls, v):
+        if v < 0 or v > 10:
+            raise ValueError("Priority must be between 0 and 10")
+        return v
+
+class GetJobStatusMessage(BaseMessage):
+    type: str = MessageType.GET_JOB_STATUS
+    job_id: str
+
+class RegisterWorkerMessage(BaseMessage):
+    type: str = MessageType.REGISTER_WORKER
+    machine_id: str
+    gpu_id: int
+
+class UpdateJobProgressMessage(BaseMessage):
+    type: str = MessageType.UPDATE_JOB_PROGRESS
+    job_id: str
+    machine_id: str
+    gpu_id: int
+    progress: int
+    status: str = "processing"
+    message: Optional[str] = None
+
+class CompleteJobMessage(BaseMessage):
+    type: str = MessageType.COMPLETE_JOB
+    job_id: str
+    machine_id: str
+    gpu_id: int
+    result: Optional[Dict[str, Any]] = None
+
+# Core Server to Client Messages
+class JobAcceptedMessage(BaseMessage):
+    type: str = MessageType.JOB_ACCEPTED
+    job_id: str
+    status: str = "pending"
+    position: Optional[int] = None
+    estimated_start: Optional[str] = None
+    notified_workers: Optional[int] = 0
+
+class JobStatusMessage(BaseMessage):
+    type: str = MessageType.JOB_STATUS
+    job_id: str
+    status: str
+    progress: Optional[int] = None
+    worker_id: Optional[str] = None
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    result: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+
+class JobUpdateMessage(BaseMessage):
+    type: str = MessageType.JOB_UPDATE
+    job_id: str
+    status: str
+    priority: Optional[int] = None
+    position: Optional[int] = None
+    progress: Optional[int] = None
+    eta: Optional[str] = None
+    message: Optional[str] = None
+    worker_id: Optional[str] = None
+
+class JobAssignedMessage(BaseMessage):
+    type: str = MessageType.JOB_ASSIGNED
+    job_id: str
+    job_type: str
+    priority: int
+    params: Dict[str, Any]
+
+class JobCompletedMessage(BaseMessage):
+    type: str = MessageType.JOB_COMPLETED
+    job_id: str
+    status: str = "completed"
+    priority: Optional[int] = None
+    position: Optional[int] = None
+    result: Optional[Dict[str, Any]] = None
+
+class ErrorMessage(BaseMessage):
+    type: str = MessageType.ERROR
+    error: str
+    details: Optional[Dict[str, Any]] = None
+
+class WorkerRegisteredMessage(BaseMessage):
+    type: str = MessageType.WORKER_REGISTERED
+    worker_id: str
+    status: str = "active"
+
+# Simple stats models
+class SubscribeStatsMessage(BaseMessage):
+    type: str = MessageType.SUBSCRIBE_STATS
+    enabled: bool = True
+
+class GetStatsMessage(BaseMessage):
+    type: str = MessageType.GET_STATS
+
+class StatsResponseMessage(BaseMessage):
+    type: str = MessageType.STATS_RESPONSE
+    stats: Dict[str, Any]
+
+class SubscribeJobMessage(BaseMessage):
+    type: str = MessageType.SUBSCRIBE_JOB
+    job_id: str
+    
+# Worker Heartbeat and Status Messages
+class WorkerHeartbeatMessage(BaseMessage):
+    type: str = MessageType.WORKER_HEARTBEAT
+    worker_id: str
+    status: Optional[str] = "idle"
+    load: Optional[float] = 0.0
+    
+# Worker Status Message
+class WorkerStatusMessage(BaseMessage):
+    type: str = MessageType.WORKER_STATUS
+    worker_id: str
+    status: Optional[str] = "idle"
+    capabilities: Optional[Dict[str, Any]] = None
+
+class ClaimJobMessage(BaseMessage):
+    type: str = MessageType.CLAIM_JOB
+    worker_id: str
+    job_id: str
+    claim_timeout: Optional[int] = 30
+
+class JobClaimedMessage(BaseMessage):
+    type: str = MessageType.JOB_CLAIMED
+    job_id: str
+    worker_id: str
+    success: bool
+    job_data: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
+    
+# Monitor Messages
+class StayAliveMessage(BaseMessage):
+    type: str = MessageType.STAY_ALIVE
+    monitor_id: str
+    timestamp: float = Field(default_factory=time.time)
+
+class StayAliveResponseMessage(BaseMessage):
+    type: str = MessageType.STAY_ALIVE_RESPONSE
+    timestamp: float = Field(default_factory=time.time)
+
+# Job Notification Messages
+class JobAvailableMessage(BaseMessage):
+    type: str = MessageType.JOB_AVAILABLE
+    job_id: str
+    job_type: str
+    priority: int | None = 0
+    job_request_payload: Dict[str, Any] | None = None
+
+# Connection Messages
+class ConnectionEstablishedMessage(BaseMessage):
+    type: str = MessageType.CONNECTION_ESTABLISHED
+    message: str = "Connection established"
 
 class MessageModels(MessageModelsInterface):
     """
@@ -21,7 +219,7 @@ class MessageModels(MessageModelsInterface):
     creation and validation methods defined in the interface.
     """
     
-    def parse_message(self, data: Dict[str, Any]) -> Optional[BaseModel]:
+    def parse_message(self, data: Dict[str, Any]) -> Optional[BaseMessage]:
         """
         Parse incoming message data into appropriate message model.
         
@@ -29,7 +227,7 @@ class MessageModels(MessageModelsInterface):
             data: Raw message data
             
         Returns:
-            Optional[BaseModel]: Parsed message model if valid, None otherwise
+            Optional[BaseMessage]: Parsed message model if valid, None otherwise
         """
         if not isinstance(data, dict) or "type" not in data:
             return None
@@ -306,3 +504,71 @@ class MessageModels(MessageModelsInterface):
                 return False
         
         return True
+    
+    def validate_get_job_status_message(self, data: Dict[str, Any]) -> bool:
+        """
+        Validate a get job status message.
+        
+        Args:
+            data: Message data to validate
+            
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        if not isinstance(data, dict):
+            return False
+        
+        # Check for required fields
+        if "job_id" not in data:
+            return False
+        
+        # Ensure job_id is a string
+        if not isinstance(data["job_id"], str):
+            return False
+        
+        return True
+    
+    def validate_register_worker_message(self, data: Dict[str, Any]) -> bool:
+        """
+        Validate a register worker message.
+        
+        Args:
+            data: Message data to validate
+            
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        if not isinstance(data, dict):
+            return False
+        
+        # Check for required fields
+        required_fields = ["machine_id", "gpu_id"]
+        for field in required_fields:
+            if field not in data:
+                return False
+        
+        # Ensure machine_id is a string
+        if not isinstance(data["machine_id"], str):
+            return False
+        
+        # Ensure gpu_id is an integer
+        if not isinstance(data["gpu_id"], int):
+            return False
+        
+        return True
+    
+    def create_stats_response_message(self, stats: Dict[str, Any]) -> BaseModel:
+        """
+        Create a stats response message.
+        
+        Args:
+            stats: System statistics
+            
+        Returns:
+            BaseModel: Stats response message model
+        """
+        return StatsResponseMessage(
+            type=MessageType.STATS_RESPONSE,
+            stats=stats,
+            timestamp=time.time()
+        )

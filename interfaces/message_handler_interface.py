@@ -4,6 +4,9 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, WebSocket
 
+# Import the specific message types for type safety
+from ..message_models import RegisterWorkerMessage
+
 class MessageHandlerInterface(ABC):
     """
     Interface defining the contract for handling  message types.
@@ -79,7 +82,7 @@ class MessageHandlerInterface(ABC):
         pass
     
     @abstractmethod
-    async def handle_register_worker(self, worker_id: str, message: Dict[str, Any]) -> None:
+    async def handle_register_worker(self, worker_id: str, message: RegisterWorkerMessage) -> None:
         """
         Handle worker registration.
         

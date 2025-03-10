@@ -22,10 +22,10 @@ class MessageRouter(MessageRouterInterface):
         # Dictionary to store message type -> handler function mappings
         self._handlers: Dict[str, Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]] = {}
     
-    async def handle_message(self, websocket: WebSocket, message: Dict[str, Any], 
+    async def route_message(self, websocket: WebSocket, message: Dict[str, Any], 
                            connection_id: str) -> Optional[Dict[str, Any]]:
         """
-        Handle an incoming message by routing it to the appropriate handler.
+        Route an incoming message to the appropriate handler.
         
         Args:
             websocket: WebSocket connection that received the message
@@ -45,8 +45,8 @@ class MessageRouter(MessageRouterInterface):
         message_type = message.get("type")
         assert isinstance(message_type, str), "message_type must be a string"
         
-        # Get the handler for this message type
-        handler = self.get_handler(message_type)
+        # Get the route (handler) for this message type
+        handler = self.get_route(message_type)
         
         # If no handler is registered, return an error
         if handler is None:
@@ -61,25 +61,25 @@ class MessageRouter(MessageRouterInterface):
             logger.error(f"Error handling message of type {message_type}: {e}")
             return {"type": "error", "error": f"Error processing message: {str(e)}"}
     
-    def register_handler(self, message_type: str, 
+    def register_route(self, message_type: str, 
                         handler: Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]) -> None:
         """
-        Register a handler function for a specific message type.
+        Register a route (handler function) for a specific message type.
         
         Args:
-            message_type: Type of message to handle
+            message_type: Type of message to route
             handler: Handler function that takes (websocket, message, connection_id) and returns a response
         """
         # Store the handler in the handlers dictionary
         self._handlers[message_type] = handler
         logger.info(f"Registered handler for message type: {message_type}")
     
-    def get_handler(self, message_type: str) -> Optional[Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]]:
+    def get_route(self, message_type: str) -> Optional[Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]]:
         """
-        Get the handler function for a specific message type.
+        Get the route (handler function) for a specific message type.
         
         Args:
-            message_type: Type of message to get handler for
+            message_type: Type of message to get route for
             
         Returns:
             Optional[Callable]: Handler function if registered, None otherwise

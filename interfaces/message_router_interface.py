@@ -14,10 +14,10 @@ class MessageRouterInterface(ABC):
     """
     
     @abstractmethod
-    async def handle_message(self, websocket: WebSocket, message: Dict[str, Any], 
+    async def route_message(self, websocket: WebSocket, message: Dict[str, Any], 
                           connection_id: str) -> Optional[Dict[str, Any]]:
         """
-        Handle an incoming message by routing it to the appropriate handler.
+        Route an incoming message to the appropriate handler.
         
         Args:
             websocket: WebSocket connection that received the message
@@ -30,24 +30,24 @@ class MessageRouterInterface(ABC):
         pass
     
     @abstractmethod
-    def register_handler(self, message_type: str, 
+    def register_route(self, message_type: str, 
                       handler: Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]) -> None:
         """
-        Register a handler function for a specific message type.
+        Register a route (handler function) for a specific message type.
         
         Args:
-            message_type: Type of message to handle
+            message_type: Type of message to route
             handler: Handler function that takes (websocket, message, connection_id) and returns a response
         """
         pass
     
     @abstractmethod
-    def get_handler(self, message_type: str) -> Optional[Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]]:
+    def get_route(self, message_type: str) -> Optional[Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]]:
         """
-        Get the handler function for a specific message type.
+        Get the route (handler function) for a specific message type.
         
         Args:
-            message_type: Type of message to get handler for
+            message_type: Type of message to get route for
             
         Returns:
             Optional[Callable]: Handler function if registered, None otherwise

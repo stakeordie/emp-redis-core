@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Implementation of the RouteHandlerInterface
+# Implementation of the MessageHandlerInterface
 import asyncio
 import json
 import time
@@ -8,38 +8,38 @@ from typing import Dict, Any, Optional, Callable, Awaitable, List
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from websockets.exceptions import ConnectionClosedError
 
-from .interfaces.route_handler_interface import RouteHandlerInterface
+from .interfaces.message_handler_interface import MessageHandlerInterface
 from .redis_service import RedisService
 from .connection_manager import ConnectionManager
 from .message_router import MessageRouter
-from .message_models import MessageModels
+from .message_models import (
+    MessageModels, MessageType, BaseMessage, ErrorMessage, JobAcceptedMessage, 
+    JobStatusMessage, JobUpdateMessage, WorkerRegisteredMessage, JobAvailableMessage,
+    JobCompletedMessage, SubmitJobMessage, GetJobStatusMessage, RegisterWorkerMessage, 
+    UpdateJobProgressMessage, CompleteJobMessage, WorkerHeartbeatMessage, WorkerStatusMessage, 
+    ClaimJobMessage, JobClaimedMessage, SubscribeJobMessage, SubscribeStatsMessage, 
+    GetStatsMessage, ConnectionEstablishedMessage, JobAssignedMessage
+)
 from .utils.logger import logger
 
-# Still importing these for type annotations, will be removed later
-from .models import (
-    RegisterWorkerMessage, UpdateJobProgressMessage, CompleteJobMessage,
-    WorkerHeartbeatMessage, WorkerStatusMessage, ClaimJobMessage,
-    JobStatusMessage
-)
-
-class RouteHandler(RouteHandlerInterface):
+class MessageHandler(MessageHandlerInterface):
     """
-    Implementation of the RouteHandlerInterface.
+    Implementation of the MessageHandlerInterface.
     
-    This class provides a concrete implementation of the route handling
+    This class provides a concrete implementation of the message handling
     contract defined in the interface, organizing and maintaining
-    route handling logic for the application.
+    message handling logic for the application.
     """
     
     def __init__(self, redis_service: RedisService, connection_manager: ConnectionManager,
                  message_router: MessageRouter, message_models: MessageModels):
         """
-        Initialize the route handler with required services.
+        Initialize the message handler with required services.
         
         Args:
             redis_service: Redis service instance
             connection_manager: Connection manager instance
-            message_handler: Message handler instance
+            message_router: Message router instance
             message_models: Message models instance
         """
         self.redis_service = redis_service
@@ -420,7 +420,6 @@ class RouteHandler(RouteHandlerInterface):
         )
         
         # Create job available notification for workers
-        from .models import JobAvailableMessage
         notification = JobAvailableMessage(
             job_id=job_id,
             job_type=job_type,
@@ -432,7 +431,6 @@ class RouteHandler(RouteHandlerInterface):
         worker_count = await self.connection_manager.notify_idle_workers(notification)
         
         # Send confirmation response with worker count
-        from .models import JobAcceptedMessage
         response = JobAcceptedMessage(
             job_id=job_id,
             position=job_data.get("position", -1),
@@ -455,13 +453,11 @@ class RouteHandler(RouteHandlerInterface):
         job_data = self.redis_service.get_job_status(job_id)
         
         if not job_data:
-            from .models import ErrorMessage
             error_message = ErrorMessage(error=f"Job {job_id} not found")
             await self.connection_manager.send_to_client(client_id, error_message)
             return
         
         # Create response
-        from .models import JobStatusMessage
         response = JobStatusMessage(
             job_id=job_id,
             status=job_data.get("status", "unknown"),
@@ -497,7 +493,6 @@ class RouteHandler(RouteHandlerInterface):
         stats = self.redis_service.get_stats()
         
         # Format the stats as a proper message with a type field
-        from .models import MessageType
         stats_response = {
             "type": MessageType.STATS_RESPONSE,
             "stats": stats,
@@ -518,9 +513,7 @@ class RouteHandler(RouteHandlerInterface):
             worker_id: Worker identifier
         """
         # Parse message using the models
-        from .models import parse_message, MessageType
-        
-        message_obj = parse_message(message)
+        message_obj = self.message_models.parse_message(message)
         
         if not message_obj:
             logger.error(f"Invalid message received from worker {worker_id}")
@@ -531,36 +524,30 @@ class RouteHandler(RouteHandlerInterface):
         # Process message based on type
         if message_obj.type == MessageType.REGISTER_WORKER:
             # Cast message to the expected type for type checking
-            from .models import RegisterWorkerMessage
             register_message = RegisterWorkerMessage(**message_obj.dict())
             await self.handle_register_worker(worker_id, register_message)
         elif message_obj.type == MessageType.UPDATE_JOB_PROGRESS:
             # Cast message to the expected type for type checking
-            from .models import UpdateJobProgressMessage
             # Create a properly typed message object
             progress_message = UpdateJobProgressMessage(**message_obj.dict())
             await self.handle_update_job_progress(worker_id, progress_message)
         elif message_obj.type == MessageType.COMPLETE_JOB:
             # Cast message to the expected type for type checking
-            from .models import CompleteJobMessage
             # Create a properly typed message object
             complete_message = CompleteJobMessage(**message_obj.dict())
             await self.handle_complete_job(worker_id, complete_message)
         elif message_obj.type == MessageType.WORKER_HEARTBEAT:
             # Cast message to the expected type for type checking
-            from .models import WorkerHeartbeatMessage
             # Create a properly typed message object
             heartbeat_message = WorkerHeartbeatMessage(**message_obj.dict())
             await self.handle_worker_heartbeat(worker_id, heartbeat_message)
         elif message_obj.type == MessageType.WORKER_STATUS:
             # Cast message to the expected type for type checking
-            from .models import WorkerStatusMessage
             # Create a properly typed message object
             status_message = WorkerStatusMessage(**message_obj.dict())
             await self.handle_worker_status(worker_id, status_message)
         elif message_obj.type == MessageType.CLAIM_JOB:
             # Cast message to the expected type for type checking
-            from .models import ClaimJobMessage
             # Create a properly typed message object
             claim_message = ClaimJobMessage(**message_obj.dict())
             await self.handle_claim_job(worker_id, claim_message)
@@ -590,7 +577,6 @@ class RouteHandler(RouteHandlerInterface):
         )
         
         # Send confirmation
-        from .models import WorkerRegisteredMessage
         response = WorkerRegisteredMessage(worker_id=worker_id)
         await self.connection_manager.send_to_worker(worker_id, response)
         
@@ -697,7 +683,6 @@ class RouteHandler(RouteHandlerInterface):
             
             if job_data:
                 # Send job details to worker
-                from .models import JobAssignedMessage
                 job_details = JobAssignedMessage(
                     job_id=message.job_id,
                     job_type=job_data.get("job_type", "unknown"),
@@ -707,7 +692,6 @@ class RouteHandler(RouteHandlerInterface):
                 await self.connection_manager.send_to_worker(worker_id, job_details)
                 
                 # Notify clients that job is now processing
-                from .models import JobStatusMessage
                 status_update = JobStatusMessage(
                     job_id=message.job_id,
                     status="processing",
@@ -720,7 +704,6 @@ class RouteHandler(RouteHandlerInterface):
                 logger.error(f"Job claimed but details not found: {message.job_id}")
         else:
             # Job could not be claimed
-            from .models import ErrorMessage
             error_message = ErrorMessage(error=f"Failed to claim job {message.job_id}")
             await self.connection_manager.send_to_worker(worker_id, error_message)
             
