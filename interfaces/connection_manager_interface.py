@@ -119,42 +119,54 @@ class ConnectionManagerInterface(ABC):
         pass
     
     @abstractmethod
-    async def broadcast_to_clients(self, message: Dict[str, Any]) -> None:
+    async def broadcast_to_clients(self, message: Dict[str, Any]) -> int:
         """
         Broadcast a message to all connected clients.
         
         Args:
             message: Message to broadcast
+            
+        Returns:
+            int: Number of clients the message was successfully sent to
         """
         pass
     
     @abstractmethod
-    async def broadcast_to_workers(self, message: Dict[str, Any]) -> None:
+    async def broadcast_to_workers(self, message: Dict[str, Any]) -> int:
         """
         Broadcast a message to all connected workers.
         
         Args:
             message: Message to broadcast
+            
+        Returns:
+            int: Number of workers the message was successfully sent to
         """
         pass
     
     @abstractmethod
-    async def broadcast_to_monitors(self, message: Dict[str, Any]) -> None:
+    async def broadcast_to_monitors(self, message: Dict[str, Any]) -> int:
         """
         Broadcast a message to all connected monitors.
         
         Args:
             message: Message to broadcast
+            
+        Returns:
+            int: Number of monitors the message was successfully sent to
         """
         pass
     
     @abstractmethod
-    async def broadcast_stats(self, stats: Dict[str, Any]) -> None:
+    async def broadcast_stats(self, stats: Dict[str, Any]) -> int:
         """
         Broadcast statistics to all subscribed clients.
         
         Args:
             stats: Statistics data to broadcast
+            
+        Returns:
+            int: Number of clients the stats were successfully sent to
         """
         pass
     
@@ -173,16 +185,12 @@ class ConnectionManagerInterface(ABC):
         pass
     
     @abstractmethod
-    async def subscribe_to_stats(self, client_id: str, enabled: bool = True) -> bool:
+    def subscribe_to_stats(self, client_id: str) -> None:
         """
         Subscribe a client to system statistics updates.
         
         Args:
             client_id: ID of the client subscribing
-            enabled: Whether to enable or disable the subscription
-            
-        Returns:
-            bool: True if subscription was successful, False otherwise
         """
         pass
     
@@ -201,12 +209,15 @@ class ConnectionManagerInterface(ABC):
         pass
     
     @abstractmethod
-    async def notify_job_update(self, job_id: str, update: Dict[str, Any]) -> None:
+    async def notify_job_update(self, job_id: str, update: Dict[str, Any]) -> bool:
         """
         Notify subscribers about a job update.
         
         Args:
             job_id: ID of the job that was updated
             update: Update data
+            
+        Returns:
+            bool: True if update was sent successfully, False otherwise
         """
         pass

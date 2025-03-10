@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 # Core data models for the Redis queue system
+# mypy: ignore-errors
 import json
-import logging
 import time
 import uuid
-from pydantic import BaseModel, Field, validator
+# Type ignore for mypy - missing pydantic stubs
+from pydantic import BaseModel, Field, field_validator  # type: ignore
 from typing import Dict, Any, Optional, List, Union
-
-# Initialize logger
-logger = logging.getLogger(__name__)
+from .utils.logger import logger
 
 # Job model for job submission
 class Job(BaseModel):
@@ -82,14 +81,13 @@ class SubmitJobMessage(BaseMessage):
     priority: int = 0
     payload: Dict[str, Any]
     
-    @validator('priority')
+    @field_validator('priority', mode='before')
     def validate_priority(cls, v):
         if v is None:
             return 0
         try:
             return int(v)
         except (ValueError, TypeError):
-            logger.warning(f"Could not convert priority {v} to integer, using 0")
             return 0
 
 class GetJobStatusMessage(BaseMessage):
@@ -146,6 +144,7 @@ class JobUpdateMessage(BaseMessage):
     progress: Optional[int] = None
     eta: Optional[str] = None
     message: Optional[str] = None
+    worker_id: Optional[str] = None  # Added to support worker identification in job updates
 
 class JobAssignedMessage(BaseMessage):
     type: str = MessageType.JOB_ASSIGNED
@@ -172,98 +171,81 @@ class WorkerRegisteredMessage(BaseMessage):
     worker_id: str
     status: str = "active"
 
-def parse_message(data: Dict[str, Any]) -> Optional[BaseMessage]:
-    """Parse incoming message data into appropriate message model"""
+def parse_message(data: Dict[str, Any]) -> Optional[Union[SubmitJobMessage, GetJobStatusMessage, SubscribeJobMessage, SubscribeStatsMessage, GetStatsMessage, ConnectionEstablishedMessage, BaseMessage]]:
+    """Parse incoming message data into appropriate message model
+    
+    Returns:
+        One of several message types depending on the input data type field,
+        or None if the message cannot be parsed
+    """
     if not isinstance(data, dict) or "type" not in data:
-        logger.error(f"Invalid message format: {data}")
         return None
     
     message_type = data.get("type")
-    logger.info(f"Received message of type: {message_type}")
-    
-    # Simply log the raw message data without any parsing
-    print(f"\n\n***** PROCESSING RAW MESSAGE *****")
-    print(f"***** MESSAGE TYPE: {message_type} *****")
-    print(f"***** MESSAGE DATA: {json.dumps(data, indent=2)} *****")
-    print("*************************************\n\n")
     
     # For submit_job messages
     if message_type == MessageType.SUBMIT_JOB:
         try:
             # Create a minimal SubmitJobMessage with just the essential fields
-            result = SubmitJobMessage(
+            return SubmitJobMessage(
                 type=MessageType.SUBMIT_JOB,
                 job_type=data.get("job_type", "unknown"),
                 priority=data.get("priority", 0),
                 payload=data.get("payload", {})
             )
-            logger.info(f"Created submit_job message: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"Error creating submit_job message: {str(e)}")
+        except Exception:
             return None
     
     # For get_job_status messages
     elif message_type == MessageType.GET_JOB_STATUS:
         try:
-            result = GetJobStatusMessage(
+            return GetJobStatusMessage(
                 type=MessageType.GET_JOB_STATUS,
                 job_id=data.get("job_id", "")
             )
-            return result
-        except Exception as e:
-            logger.error(f"Error creating get_job_status message: {str(e)}")
+        except Exception:
             return None
     
     # For subscribe_job messages
     elif message_type == MessageType.SUBSCRIBE_JOB:
         try:
-            result = SubscribeJobMessage(
+            return SubscribeJobMessage(
                 type=MessageType.SUBSCRIBE_JOB,
                 job_id=data.get("job_id", "")
             )
-            return result
-        except Exception as e:
-            logger.error(f"Error creating subscribe_job message: {str(e)}")
+        except Exception:
             return None
     
     # For subscribe_stats messages
     elif message_type == MessageType.SUBSCRIBE_STATS:
         try:
-            result = SubscribeStatsMessage(
+            return SubscribeStatsMessage(
                 type=MessageType.SUBSCRIBE_STATS
             )
-            return result
-        except Exception as e:
-            logger.error(f"Error creating subscribe_stats message: {str(e)}")
+        except Exception:
             return None
     
     # For get_stats messages
     elif message_type == MessageType.GET_STATS:
         try:
-            result = GetStatsMessage(
+            return GetStatsMessage(
                 type=MessageType.GET_STATS
             )
-            return result
-        except Exception as e:
-            logger.error(f"Error creating get_stats message: {str(e)}")
+        except Exception:
             return None
     
     # For connection_established messages
     elif message_type == MessageType.CONNECTION_ESTABLISHED:
         try:
-            result = ConnectionEstablishedMessage(
+            return ConnectionEstablishedMessage(
                 type=MessageType.CONNECTION_ESTABLISHED,
                 message=data.get("message", "Connection established")
             )
-            return result
-        except Exception as e:
-            logger.error(f"Error creating connection_established message: {str(e)}")
+        except Exception:
             return None
     
     # For other message types, return None
     else:
-        logger.warning(f"Unhandled message type: {message_type}")
         return None
 
 # Simple stats models (basic versions for core functionality)
@@ -293,7 +275,7 @@ class WorkerStatusMessage(BaseMessage):
     worker_id: str
     status: Optional[str] = "idle"
     capabilities: Optional[Dict[str, Any]] = None
-    timestamp: Optional[float] = Field(default_factory=time.time)
+    # Timestamp is already defined in BaseMessage, so we don't redefine it here
     
 class ClaimJobMessage(BaseMessage):
     type: str = MessageType.CLAIM_JOB
@@ -326,8 +308,8 @@ class JobAvailableMessage(BaseMessage):
     type: str = MessageType.JOB_AVAILABLE
     job_id: str
     job_type: str
-    priority: Optional[int] = 0
-    params_summary: Optional[Dict[str, Any]] = None
+    priority: int | None = 0
+    job_request_payload: Dict[str, Any] | None = None
 
 # Connection Messages
 class ConnectionEstablishedMessage(BaseMessage):

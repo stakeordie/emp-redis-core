@@ -3,12 +3,11 @@
 import os
 import json
 import time
-import logging
 import redis
 import redis.asyncio as aioredis
 from typing import Dict, Any, Optional, List, Union, Callable
-
-logger = logging.getLogger(__name__)
+from .utils.logger import logger
+from .interfaces import RedisServiceInterface
 
 # Redis configuration
 # When running in Docker, "REDIS_HOST" env var should be set to the container name (e.g., "hub")
@@ -18,8 +17,7 @@ REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 REDIS_DB = int(os.environ.get("REDIS_DB", 0))
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", None)
 
-# Log the actual Redis host being used for debugging
-logger.info(f"Redis configured to connect to {REDIS_HOST}:{REDIS_PORT}")
+# Redis host configuration
 
 # Queue names
 STANDARD_QUEUE = "job_queue"
@@ -29,8 +27,11 @@ PRIORITY_QUEUE = "priority_queue"
 JOB_PREFIX = "job:"
 WORKER_PREFIX = "worker:"
 
-class RedisService:
-    """Core service for interacting with Redis for job queue operations"""
+class RedisService(RedisServiceInterface):
+    """Core service for interacting with Redis for job queue operations
+    
+    Implements the RedisServiceInterface to ensure consistent API across the application.
+    """
     
     def __init__(self):
         """Initialize Redis connections"""
@@ -47,10 +48,15 @@ class RedisService:
         self.async_client = None
         self.pubsub = None
         
-        logger.info(f"Redis service initialized with host {REDIS_HOST}:{REDIS_PORT}")
+
     
-    async def connect_async(self):
-        """Connect to Redis asynchronously for pub/sub"""
+    async def connect_async(self) -> None:
+        """
+        Connect to Redis asynchronously for pub/sub operations.
+        
+        This method establishes an asynchronous connection to Redis
+        for operations that require pub/sub functionality.
+        """
         if self.async_client is None:
             self.async_client = aioredis.Redis(
                 host=REDIS_HOST,
@@ -60,22 +66,31 @@ class RedisService:
                 decode_responses=True,
             )
             self.pubsub = self.async_client.pubsub()
-            logger.info("Async Redis connection established")
+
     
-    async def close_async(self):
-        """Close the async Redis connection"""
+    async def close_async(self) -> None:
+        """
+        Close the async Redis connection.
+        
+        This method properly closes the asynchronous Redis connection
+        and cleans up any resources.
+        """
         if self.pubsub:
             await self.pubsub.close()
         if self.async_client:
             await self.async_client.close()
-        logger.info("Async Redis connection closed")
+
     
-    async def init_redis(self):
-        """Initialize Redis connections and data structures
+    async def init_redis(self) -> bool:
+        """
+        Initialize Redis connections and data structures.
         
         This method ensures that both synchronous and asynchronous
         Redis connections are properly established and initializes
         any necessary data structures for the job queue system.
+        
+        Returns:
+            bool: True if initialization was successful, False otherwise
         """
         # Ensure async connection is established
         await self.connect_async()
@@ -106,11 +121,12 @@ class RedisService:
             if not self.client.exists(key):
                 self.client.set(key, 0)
                 
-        logger.info("Redis data structures initialized successfully")
+
         return True
     
-    async def close(self):
-        """Close all Redis connections
+    async def close(self) -> None:
+        """
+        Close all Redis connections.
         
         This method ensures that both synchronous and asynchronous
         Redis connections are properly closed and resources are released.
@@ -121,21 +137,43 @@ class RedisService:
         # Close synchronous connection
         if self.client:
             self.client.close()
-            logger.info("Synchronous Redis connection closed")
-            
-        logger.info("All Redis connections closed successfully")
+
     
     # Job operations
-    def add_job(self, job_id: str, job_type: str, priority: int, params: Dict[str, Any], client_id: Optional[str] = None) -> Dict[str, Any]:
-        """Add a job to the queue"""
+    def add_job(self, job_id: str, job_type: str, priority: int, job_request_payload: Union[Dict[str, Any], str], client_id: Optional[str] = None) -> Dict[str, Any]:
+        """Add a job to the queue
+        
+        Args:
+            job_id: Unique identifier for the job
+            job_type: Type of job to be processed
+            priority: Job priority (higher values have higher priority)
+            job_request_payload: The payload/configuration from the client's job request (either a dict or JSON string)
+            client_id: Optional client identifier
+            
+        Returns:
+            Dict[str, Any]: Job data including position in queue
+        """
         job_key = f"{JOB_PREFIX}{job_id}"
+        
+        # Ensure job_request_payload is a JSON string
+        if isinstance(job_request_payload, dict):
+            job_request_payload_json = json.dumps(job_request_payload)
+        else:
+            # Already a string, validate it's proper JSON
+            try:
+                # Parse and re-serialize to ensure it's valid JSON
+                json.loads(job_request_payload)
+                job_request_payload_json = job_request_payload
+            except json.JSONDecodeError:
+                # If not valid JSON, treat as a string and serialize it
+                job_request_payload_json = json.dumps({"raw_payload": job_request_payload})
         
         # Store job details
         job_data = {
             "id": job_id,
             "type": job_type,
             "priority": priority,
-            "params": json.dumps(params),
+            "job_request_payload": job_request_payload_json,
             "status": "pending",
             "created_at": time.time(),
         }
@@ -157,10 +195,10 @@ class RedisService:
         else:
             position = self.client.llen(STANDARD_QUEUE) - self.client.lpos(STANDARD_QUEUE, job_id)
         
-        logger.info(f"Added job {job_id} to queue with priority {priority}, position {position}")
+
         
         # Notify idle workers about the new job
-        self.notify_idle_workers_of_job(job_id, job_type, params)
+        self.notify_idle_workers_of_job(job_id, job_type, job_request_payload=job_request_payload_json)
         
         # Return job data with position
         job_data["position"] = position if position is not None else -1
@@ -168,13 +206,25 @@ class RedisService:
     
     # get_next_job method removed - legacy code
     
-    def update_job_progress(self, job_id: str, progress: int, worker_id: str, message: Optional[str] = None) -> bool:
-        """Update job progress"""
+    def update_job_progress(self, job_id: str, progress: int, message: Optional[str] = None) -> bool:
+        """Update the progress of a job.
+        
+        Args:
+            job_id: ID of the job to update
+            progress: Progress percentage (0-100)
+            message: Optional status message
+            
+        Returns:
+            bool: True if update was successful, False otherwise
+        """
+        # Get the worker_id from the job data
+        job_key = f"{JOB_PREFIX}{job_id}"
+        worker_id = self.client.hget(job_key, "worker_id")
         job_key = f"{JOB_PREFIX}{job_id}"
         
         # Check if job exists
         if not self.client.exists(job_key):
-            logger.error(f"Job {job_id} not found in Redis")
+
             return False
         
         # Update job progress
@@ -182,20 +232,31 @@ class RedisService:
         if message:
             self.client.hset(job_key, "message", message)
         
-        logger.debug(f"Updated job {job_id} progress to {progress}%")
+
         
         # Publish progress update event
         self.publish_job_update(job_id, "processing", progress=progress, message=message, worker_id=worker_id)
         
         return True
     
-    def complete_job(self, job_id: str, worker_id: str, result: Optional[Dict[str, Any]] = None) -> bool:
-        """Mark a job as completed"""
+    def complete_job(self, job_id: str, result: Optional[Dict[str, Any]] = None) -> bool:
+        """Mark a job as completed.
+        
+        Args:
+            job_id: ID of the job to complete
+            result: Optional job result data
+            
+        Returns:
+            bool: True if completion was successful, False otherwise
+        """
+        # Get the worker_id from the job data
+        job_key = f"{JOB_PREFIX}{job_id}"
+        worker_id = self.client.hget(job_key, "worker_id")
         job_key = f"{JOB_PREFIX}{job_id}"
         
         # Check if job exists
         if not self.client.exists(job_key):
-            logger.error(f"Job {job_id} not found in Redis")
+
             return False
         
         # Update job status
@@ -207,27 +268,38 @@ class RedisService:
         if result:
             self.client.hset(job_key, "result", json.dumps(result))
         
-        logger.info(f"Worker {worker_id} completed job {job_id}")
+
         
         # Publish completion event
         self.publish_job_update(job_id, "completed", result=result, worker_id=worker_id)
         
         return True
         
-    def fail_job(self, job_id: str, worker_id: str, error: Optional[str] = None) -> bool:
-        """Mark a job as failed"""
+    def fail_job(self, job_id: str, error: str) -> bool:
+        """Mark a job as failed.
+        
+        Args:
+            job_id: ID of the job that failed
+            error: Error message
+            
+        Returns:
+            bool: True if failure was recorded successfully, False otherwise
+        """
+        # Get the worker_id from the job data
+        job_key = f"{JOB_PREFIX}{job_id}"
+        worker_id = self.client.hget(job_key, "worker_id")
         job_key = f"{JOB_PREFIX}{job_id}"
         
         # Check if job exists
         if not self.client.exists(job_key):
-            logger.error(f"Job {job_id} not found in Redis")
+
             return False
         
         # Update job status
         self.client.hset(job_key, "status", "failed")
         self.client.hset(job_key, "error", error if error else "Unknown error")
         
-        logger.info(f"Worker {worker_id} failed job {job_id}: {error}")
+
         
         # Publish failure event
         self.publish_job_update(job_id, "failed", error=error, worker_id=worker_id)
@@ -235,23 +307,40 @@ class RedisService:
         return True
     
     def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Get the current status of a job"""
+        """Get the current status of a job
+        
+        Args:
+            job_id: ID of the job to check
+            
+        Returns:
+            Optional[Dict[str, Any]]: Job status data if job exists, None otherwise
+        """
         job_key = f"{JOB_PREFIX}{job_id}"
         
         # Check if job exists
         if not self.client.exists(job_key):
-            logger.error(f"Job {job_id} not found in Redis")
             return None
         
-        # Get job details
-        job_data = self.client.hgetall(job_key)
+        # Get job details from Redis
+        redis_result = self.client.hgetall(job_key)
         
-        # Parse params and result if present
-        if "params" in job_data:
+        # Create a new dictionary with the Redis result to ensure proper typing
+        job_data: Dict[str, Any] = dict(redis_result)
+        
+        # Parse job_request_payload and result if present
+        if "job_request_payload" in job_data:
             try:
-                job_data["params"] = json.loads(job_data["params"])
+                job_data["job_request_payload"] = json.loads(job_data["job_request_payload"])
             except:
-                job_data["params"] = {}
+                job_data["job_request_payload"] = {}
+        # For backward compatibility, also check for the old "params" key
+        elif "params" in job_data:
+            try:
+                job_data["job_request_payload"] = json.loads(job_data["params"])
+                # Remove the old key to avoid confusion
+                del job_data["params"]
+            except:
+                job_data["job_request_payload"] = {}
                 
         if "result" in job_data:
             try:
@@ -262,17 +351,39 @@ class RedisService:
         # Add queue position if job is pending
         if job_data.get("status") == "pending":
             priority = int(job_data.get("priority", 0))
+            position: int = -1  # Default position if not found
+            
             if priority > 0:
-                position = self.client.zrank(PRIORITY_QUEUE, job_id)
+                # zrank can return None if the element is not in the sorted set
+                rank_result = self.client.zrank(PRIORITY_QUEUE, job_id)
+                if rank_result is not None:
+                    position = int(rank_result)
             else:
-                position = self.client.llen(STANDARD_QUEUE) - self.client.lpos(STANDARD_QUEUE, job_id)
-            job_data["position"] = position if position is not None else -1
+                # Handle standard queue position calculation
+                queue_length = int(self.client.llen(STANDARD_QUEUE))
+                pos_result = self.client.lpos(STANDARD_QUEUE, job_id)
+                if pos_result is not None:
+                    position = queue_length - int(pos_result)
+            
+            # Add position to job data with explicit type
+            job_data["position"] = position
         
         return job_data
     
-    def register_worker(self, worker_id: str, worker_info: Dict[str, Any]) -> bool:
-        """Register a worker in Redis"""
+    def register_worker(self, worker_id: str, capabilities: Optional[Dict[str, Any]] = None) -> bool:
+        """Register a worker in Redis
+        
+        Args:
+            worker_id: Unique identifier for the worker
+            capabilities: Optional worker capabilities
+            
+        Returns:
+            bool: True if registration was successful, False otherwise
+        """
         worker_key = f"{WORKER_PREFIX}{worker_id}"
+        
+        # Initialize worker info from capabilities or create empty dict
+        worker_info = capabilities or {}
         
         # Add worker info with current timestamp
         worker_info["registered_at"] = time.time()
@@ -288,39 +399,58 @@ class RedisService:
         # Add to idle workers set since all workers start as idle
         self.client.sadd("workers:idle", worker_id)
         
-        logger.info(f"Registered worker {worker_id} and added to worker tracking sets")
-        
         return True
-    
-    def update_worker_heartbeat(self, worker_id: str, status: str = None) -> bool:
+        
+    def worker_heartbeat(self, worker_id: str) -> bool:
+        """
+        Record a heartbeat from a worker.
+        
+        Args:
+            worker_id: ID of the worker sending the heartbeat
+            
+        Returns:
+            bool: True if heartbeat was recorded successfully, False otherwise
+        """
+        worker_key = f"{WORKER_PREFIX}{worker_id}"
+        
+        # Check if worker exists
+        if not self.client.exists(worker_key):
+            return False
+        
+        # Update heartbeat timestamp
+        self.client.hset(worker_key, "last_heartbeat", time.time())
+        return True
+        
+    def update_worker_heartbeat(self, worker_id: str, status: Optional[str] = None) -> bool:
+        # Using Optional[str] instead of str = None to comply with PEP 484
         """Update worker heartbeat timestamp and optionally status"""
         worker_key = f"{WORKER_PREFIX}{worker_id}"
         
         # Check if worker exists
         if not self.client.exists(worker_key):
-            logger.error(f"Worker {worker_id} not found in Redis")
             return False
         
         # Update heartbeat
-        update_data = {"last_heartbeat": time.time()}
+        update_data = {"last_heartbeat": str(time.time())}
         
         # Update status if provided
         if status is not None:
             # Get current status for comparison
             current_status = self.client.hget(worker_key, "status")
-            update_data["status"] = status
+            # Ensure status is treated as a string type
+            update_data["status"] = str(status)
             
             # Update worker tracking sets based on status change
             if status == "idle":
                 # Worker is now idle, add to idle workers set
                 self.client.sadd("workers:idle", worker_id)
-                logger.debug(f"Added {worker_id} to idle workers set")
+
             elif current_status == "idle" and status != "idle":
                 # Worker was idle but now is not, remove from idle workers set
                 self.client.srem("workers:idle", worker_id)
-                logger.debug(f"Removed {worker_id} from idle workers set")
+
             
-            logger.debug(f"Updated worker {worker_id} status from {current_status} to {status}")
+
         
         # Update the worker hash
         self.client.hset(worker_key, mapping=update_data)
@@ -335,38 +465,54 @@ class RedisService:
             # Also check if worker is in the all workers set as a safeguard
             in_all_set = self.client.sismember("workers:all", worker_id)
             if not in_all_set:
-                logger.warning(f"Worker {worker_id} exists as hash but not in workers:all set, repairing")
                 self.client.sadd("workers:all", worker_id)
             
             return True
         return False
     
-    def update_worker_status(self, worker_id: str, status: str) -> bool:
-        """Update worker status"""
+    def update_worker_status(self, worker_id: str, status: str, job_id: Optional[str] = None) -> bool:
+        """Update the status of a worker.
+        
+        Args:
+            worker_id: ID of the worker to update
+            status: New status (e.g., "idle", "busy")
+            job_id: Optional ID of the job the worker is processing
+            
+        Returns:
+            bool: True if update was successful, False otherwise
+        """
         worker_key = f"{WORKER_PREFIX}{worker_id}"
         
         # Check if worker exists
         if not self.client.exists(worker_key):
-            logger.error(f"Worker {worker_id} not found in Redis")
             return False
         
         # Get current status for comparison
         current_status = self.client.hget(worker_key, "status")
         
         # Update status in the worker hash
-        self.client.hset(worker_key, "status", status)
+        update_data = {"status": status}
+        
+        # Update job_id if provided
+        if job_id is not None:
+            update_data["current_job_id"] = job_id
+        elif status == "idle" and self.client.hexists(worker_key, "current_job_id"):
+            # If worker is now idle and no job_id is provided, remove current_job_id
+            self.client.hdel(worker_key, "current_job_id")
+            
+        self.client.hset(worker_key, mapping=update_data)
         
         # Update worker tracking sets based on status change
         if status == "idle":
             # Worker is now idle, add to idle workers set
             self.client.sadd("workers:idle", worker_id)
-            logger.debug(f"Added {worker_id} to idle workers set")
+
         elif current_status == "idle" and status != "idle":
             # Worker was idle but now is not, remove from idle workers set
             self.client.srem("workers:idle", worker_id)
-            logger.debug(f"Removed {worker_id} from idle workers set")
+
         
-        logger.info(f"Updated worker {worker_id} status from {current_status} to {status}")
+
         
         return True
         
@@ -376,7 +522,6 @@ class RedisService:
         
         # Check if worker exists
         if not self.client.exists(worker_key):
-            logger.error(f"Worker {worker_id} not found in Redis")
             return False
         
         # Convert capabilities dict to JSON string
@@ -385,25 +530,61 @@ class RedisService:
         # Update capabilities in the worker hash
         self.client.hset(worker_key, "capabilities", capabilities_json)
         
-        logger.info(f"Updated capabilities for worker {worker_id}")
+
         
         return True
     
     def get_worker_info(self, worker_id: str) -> Optional[Dict[str, Any]]:
-        """Get information about a worker"""
+        """Get information about a worker
+        
+        Args:
+            worker_id: ID of the worker to get information about
+            
+        Returns:
+            Optional[Dict[str, Any]]: Worker information if worker exists, None otherwise
+        """
         worker_key = f"{WORKER_PREFIX}{worker_id}"
         
         # Check if worker exists
         if not self.client.exists(worker_key):
-            logger.error(f"Worker {worker_id} not found in Redis")
             return None
         
-        return self.client.hgetall(worker_key)
+        # Get worker details from Redis
+        redis_result = self.client.hgetall(worker_key)
+        
+        # Create a new dictionary with the Redis result to ensure proper typing
+        worker_data: Dict[str, Any] = dict(redis_result)
+        
+        return worker_data
     
     def get_stats(self) -> Dict[str, Any]:
-        """Get system statistics"""
-        # Initialize stats structure
-        stats = {
+        """Get system statistics
+        
+        Returns:
+            Dict[str, Any]: Dictionary containing statistics about queues, jobs, and workers
+            with the following structure:
+            {
+                "queues": {
+                    "priority": int,  # Number of jobs in priority queue
+                    "standard": int,  # Number of jobs in standard queue
+                    "total": int      # Total number of jobs in all queues
+                },
+                "jobs": {
+                    "total": int,     # Total number of jobs
+                    "status": {       # Counts of jobs by status
+                        "<status>": int
+                    }
+                },
+                "workers": {
+                    "total": int,     # Total number of workers
+                    "status": {       # Counts of workers by status
+                        "<status>": int
+                    }
+                }
+            }
+        """
+        # Initialize stats structure with explicit type annotations
+        stats: Dict[str, Dict[str, Any]] = {
             "queues": {
                 "priority": 0,
                 "standard": 0,
@@ -420,10 +601,13 @@ class RedisService:
         }
         
         try:
-            # Queue stats
-            stats["queues"]["priority"] = self.client.zcard(PRIORITY_QUEUE)
-            stats["queues"]["standard"] = self.client.llen(STANDARD_QUEUE)
-            stats["queues"]["total"] = stats["queues"]["priority"] + stats["queues"]["standard"]
+            # Queue stats - ensure proper type conversion from Redis return values
+            priority_count: int = int(self.client.zcard(PRIORITY_QUEUE))
+            standard_count: int = int(self.client.llen(STANDARD_QUEUE))
+            
+            stats["queues"]["priority"] = priority_count
+            stats["queues"]["standard"] = standard_count
+            stats["queues"]["total"] = priority_count + standard_count
             
             # Job stats
             job_keys = self.client.keys(f"{JOB_PREFIX}*")
@@ -433,7 +617,10 @@ class RedisService:
             for job_key in job_keys:
                 job_status = self.client.hget(job_key, "status")
                 if job_status:
-                    stats["jobs"]["status"][job_status] = stats["jobs"]["status"].get(job_status, 0) + 1
+                    # Ensure job_status is treated as a string for dictionary key
+                    status_key = str(job_status)
+                    current_count = stats["jobs"]["status"].get(status_key, 0)
+                    stats["jobs"]["status"][status_key] = current_count + 1
             
             # Worker stats
             worker_keys = self.client.keys(f"{WORKER_PREFIX}*")
@@ -443,10 +630,14 @@ class RedisService:
             for worker_key in worker_keys:
                 worker_status = self.client.hget(worker_key, "status")
                 if worker_status:
-                    stats["workers"]["status"][worker_status] = stats["workers"]["status"].get(worker_status, 0) + 1
+                    # Ensure worker_status is treated as a string for dictionary key
+                    status_key = str(worker_status)
+                    current_count = stats["workers"]["status"].get(status_key, 0)
+                    stats["workers"]["status"][status_key] = current_count + 1
             
-        except Exception as e:
-            logger.error(f"Error getting system stats: {str(e)}")
+        except Exception:
+            # Keep the empty stats structure in case of errors
+            pass
         
         return stats
     
@@ -460,7 +651,9 @@ class RedisService:
         
         for worker_key in worker_keys:
             worker_id = worker_key.replace(f"{WORKER_PREFIX}", "")
-            worker_data = self.client.hgetall(worker_key)
+            # Get worker details from Redis and convert to proper dictionary
+            redis_result = self.client.hgetall(worker_key)
+            worker_data: Dict[str, Any] = dict(redis_result)
             
             # Skip if no heartbeat data
             if "last_heartbeat" not in worker_data:
@@ -471,7 +664,7 @@ class RedisService:
             
             # Check if worker is stale
             if heartbeat_age > max_heartbeat_age:
-                logger.info(f"Worker {worker_id} is stale (no heartbeat for {heartbeat_age:.1f}s)")
+
                 
                 # Find any jobs assigned to this worker
                 job_keys = self.client.keys(f"{JOB_PREFIX}*")
@@ -497,7 +690,7 @@ class RedisService:
                         else:
                             self.client.lpush(STANDARD_QUEUE, job_id)
                             
-                        logger.info(f"Reset stale job {job_id} back to pending status (was assigned to worker {worker_id})")
+
                         stale_count += 1
                 
                 # Mark worker as disconnected
@@ -532,12 +725,13 @@ class RedisService:
             if heartbeat_age > max_heartbeat_age:
                 # Mark worker as out_of_service
                 self.client.hset(worker_key, "status", "out_of_service")
-                logger.warning(f"Worker {worker_id} marked as out_of_service (no heartbeat for {heartbeat_age:.1f} seconds)")
+
                 stale_count += 1
         
         return stale_count
         
-    def notify_idle_workers_of_job(self, job_id: str, job_type: str, params: Dict[str, Any] = None) -> List[str]:
+    def notify_idle_workers_of_job(self, job_id: str, job_type: str, job_request_payload: Optional[str] = None) -> List[str]:
+        # Using Optional[Dict[str, Any]] to match interface requirements
         """
         Notify idle workers about an available job.
         
@@ -549,7 +743,7 @@ class RedisService:
         Args:
             job_id: Unique identifier for the job
             job_type: Type of job to be processed
-            params: Optional job parameters
+            job_request_payload: Optional payload from the original job request as a JSON string
             
         Returns:
             List[str]: List of worker IDs that were notified
@@ -564,12 +758,13 @@ class RedisService:
             "job_type": job_type
         }
         
-        if params:
-            notification["params"] = params
+        if job_request_payload:
+            # Include the original job request payload in the notification
+            notification["job_request_payload"] = job_request_payload
             
         self.client.publish("job_notifications", json.dumps(notification))
         
-        logger.info(f"Notified {len(idle_workers)} idle workers about job {job_id}")
+
         return list(idle_workers)
     
     def claim_job(self, job_id: str, worker_id: str, claim_timeout: int = 30) -> Optional[Dict[str, Any]]:
@@ -585,7 +780,7 @@ class RedisService:
                 
                 if job_status != "pending":
                     pipe.unwatch()
-                    logger.warning(f"Worker {worker_id} tried to claim job {job_id}, but status is {job_status}")
+
                     return None
                 
                 # Start transaction
@@ -600,18 +795,22 @@ class RedisService:
                 # Execute transaction
                 pipe.execute()
                 
-                # Get job details
-                job_data = self.client.hgetall(job_key)
+                # Get job details from Redis and convert to proper dictionary
+                redis_result = self.client.hgetall(job_key)
+                job_data: Dict[str, Any] = dict(redis_result)
                 
                 # Parse params back to dict
                 if "params" in job_data:
-                    job_data["params"] = json.loads(job_data["params"])
+                    # Convert the JSON string to a dictionary
+                    params_str = job_data["params"]
+                    if isinstance(params_str, str):
+                        job_data["params"] = json.loads(params_str)
                 
-                logger.info(f"Worker {worker_id} claimed job {job_id}")
+
                 return job_data
                 
             except Exception as e:
-                logger.error(f"Error claiming job {job_id} by worker {worker_id}: {str(e)}")
+
                 return None
     
     def cleanup_stale_claims(self, max_claim_age: int = 60) -> int:
@@ -649,7 +848,7 @@ class RedisService:
                     else:
                         self.client.lpush(STANDARD_QUEUE, job_id)
                         
-                    logger.info(f"Reset stale claim for job {job_id} back to pending status")
+
                     stale_count += 1
         
         return stale_count
@@ -674,7 +873,7 @@ class RedisService:
             
             return True
         except Exception as e:
-            logger.error(f"Error publishing job update: {str(e)}")
+
             return False
     
     async def subscribe_to_channel(self, channel: str, callback: Callable[[Dict[str, Any]], None]) -> None:
@@ -682,8 +881,10 @@ class RedisService:
         if not self.async_client:
             await self.connect_async()
         
-        await self.pubsub.subscribe(**{channel: callback})
-        logger.info(f"Subscribed to Redis channel: {channel}")
+        # Ensure pubsub is not None before attempting to subscribe
+        if self.pubsub:
+            await self.pubsub.subscribe(**{channel: callback})
+
         
     def get_all_workers_status(self) -> Dict[str, Dict[str, Any]]:
         """Get status information for all workers
@@ -699,7 +900,9 @@ class RedisService:
             
             for worker_key in worker_keys:
                 worker_id = worker_key.replace(f"{WORKER_PREFIX}", "")
-                worker_data = self.client.hgetall(worker_key)
+                # Get worker details from Redis and convert to proper dictionary
+                redis_result = self.client.hgetall(worker_key)
+                worker_data: Dict[str, Any] = dict(redis_result)
                 
                 # Add additional calculated fields
                 if "last_heartbeat" in worker_data:
@@ -709,9 +912,9 @@ class RedisService:
                 # Add to result dictionary
                 workers_status[worker_id] = worker_data
                 
-            logger.debug(f"Retrieved status for {len(workers_status)} workers")
+
             
-        except Exception as e:
-            logger.error(f"Error getting workers status: {str(e)}")
+        except Exception:
+            pass
             
         return workers_status
