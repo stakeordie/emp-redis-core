@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-# Interface for specific message handling
+# Interface for  message handling
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, WebSocket
 
-class SpecificMessageHandlerInterface(ABC):
+class MessageHandlerInterface(ABC):
     """
-    Interface defining the contract for handling specific message types.
+    Interface defining the contract for handling  message types.
     
-    This interface ensures that all specific message handler implementations
+    This interface ensures that all  message handler implementations
     follow the same contract, making it easier to organize and
     maintain message handling logic.
     """
