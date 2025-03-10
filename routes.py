@@ -19,7 +19,7 @@ from .models import (
     JobClaimedMessage, JobAvailableMessage,
     WorkerStatusMessage
 )
-from .connections import ConnectionManager
+from .connection_manager import ConnectionManager
 from .redis_service import RedisService, STANDARD_QUEUE, PRIORITY_QUEUE
 
 # Initialize services
@@ -235,7 +235,7 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
                         await handle_get_job_status(client_id, job_id)
                     elif message_type == MessageType.SUBSCRIBE_JOB:
                         job_id = message_data.get('job_id', '')
-                        handle_subscribe_job(client_id, job_id)
+                        await handle_subscribe_job(client_id, job_id)
                     elif message_type == MessageType.SUBSCRIBE_STATS:
                         handle_subscribe_stats(client_id)
                     elif message_type == MessageType.GET_STATS:
@@ -536,10 +536,10 @@ def init_routes(app: FastAPI, redis_service: Optional[RedisService] = None, conn
         # Subscribe client to future updates for this job
         connection_manager.subscribe_to_job(job_id, client_id)
     
-    def handle_subscribe_job(client_id: str, job_id: str):
+    async def handle_subscribe_job(client_id: str, job_id: str):
         """Handle job subscription request from a client"""
         # Handle job subscription
-        connection_manager.subscribe_to_job(job_id, client_id)
+        await connection_manager.subscribe_to_job(job_id, client_id)
     
     def handle_subscribe_stats(client_id: str):
         """Handle stats subscription request from a client"""

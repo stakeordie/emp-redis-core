@@ -229,7 +229,7 @@ class RedisServiceInterface(ABC):
         pass
     
     @abstractmethod
-    def notify_idle_workers_of_job(self, job_id: str, job_type: str, params: Optional[Dict[str, Any]] = None) -> List[str]:
+    def notify_idle_workers_of_job(self, job_id: str, job_type: str, job_request_payload: Optional[str] = None) -> List[str]:
         """
         Notify idle workers about an available job.
         
@@ -241,7 +241,7 @@ class RedisServiceInterface(ABC):
         Args:
             job_id: Unique identifier for the job
             job_type: Type of job to be processed
-            params: Optional job parameters
+            job_request_payload: Optional payload from the original job request as a JSON string
             
         Returns:
             List[str]: List of worker IDs that were notified

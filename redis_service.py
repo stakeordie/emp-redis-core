@@ -731,7 +731,7 @@ class RedisService(RedisServiceInterface):
         return stale_count
         
     def notify_idle_workers_of_job(self, job_id: str, job_type: str, job_request_payload: Optional[str] = None) -> List[str]:
-        # Using Optional[Dict[str, Any]] to match interface requirements
+        # Parameter is now correctly typed as Optional[str] to match interface
         """
         Notify idle workers about an available job.
         

@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-# Interface for message handling
+# Interface for message routing
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Callable, Awaitable
 from fastapi import WebSocket
 
-class MessageHandlerInterface(ABC):
+class MessageRouterInterface(ABC):
     """
-    Interface defining the contract for message handling.
+    Interface defining the contract for message routing.
     
-    This interface ensures that all message handlers follow the same
-    contract, making it easier to implement different handlers for
+    This interface ensures that all message routers follow the same
+    contract, making it easier to implement different routers for
     different message types or sources.
     """
     
     @abstractmethod
     async def handle_message(self, websocket: WebSocket, message: Dict[str, Any], 
-                            connection_id: str) -> Optional[Dict[str, Any]]:
+                          connection_id: str) -> Optional[Dict[str, Any]]:
         """
-        Handle an incoming message.
+        Handle an incoming message by routing it to the appropriate handler.
         
         Args:
             websocket: WebSocket connection that received the message
@@ -31,7 +31,7 @@ class MessageHandlerInterface(ABC):
     
     @abstractmethod
     def register_handler(self, message_type: str, 
-                        handler: Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]) -> None:
+                      handler: Callable[[WebSocket, Dict[str, Any], str], Awaitable[Optional[Dict[str, Any]]]]) -> None:
         """
         Register a handler function for a specific message type.
         

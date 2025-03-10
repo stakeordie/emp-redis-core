@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Interface for message models
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Type
 from pydantic import BaseModel
 
 class MessageModelsInterface(ABC):
@@ -42,7 +42,9 @@ class MessageModelsInterface(ABC):
     
     @abstractmethod
     def create_job_accepted_message(self, job_id: str, status: str = "pending", 
-                                   position: Optional[int] = None) -> BaseModel:
+                                   position: Optional[int] = None,
+                                   estimated_start: Optional[str] = None,
+                                   notified_workers: Optional[int] = 0) -> BaseModel:
         """
         Create a job accepted message.
         
@@ -50,6 +52,8 @@ class MessageModelsInterface(ABC):
             job_id: ID of the accepted job
             status: Job status
             position: Optional position in queue
+            estimated_start: Optional estimated start time
+            notified_workers: Optional number of workers notified
             
         Returns:
             BaseModel: Job accepted message model
@@ -59,7 +63,11 @@ class MessageModelsInterface(ABC):
     @abstractmethod
     def create_job_status_message(self, job_id: str, status: str, 
                                  progress: Optional[int] = None,
-                                 result: Optional[Dict[str, Any]] = None) -> BaseModel:
+                                 worker_id: Optional[str] = None,
+                                 started_at: Optional[float] = None,
+                                 completed_at: Optional[float] = None,
+                                 result: Optional[Dict[str, Any]] = None,
+                                 message: Optional[str] = None) -> BaseModel:
         """
         Create a job status message.
         
@@ -67,7 +75,11 @@ class MessageModelsInterface(ABC):
             job_id: ID of the job
             status: Job status
             progress: Optional progress percentage
+            worker_id: Optional ID of the worker processing the job
+            started_at: Optional timestamp when job started
+            completed_at: Optional timestamp when job completed
             result: Optional job result
+            message: Optional status message
             
         Returns:
             BaseModel: Job status message model
@@ -99,6 +111,70 @@ class MessageModelsInterface(ABC):
             
         Returns:
             BaseModel: Stats response message model
+        """
+        pass
+    
+    @abstractmethod
+    def create_job_update_message(self, job_id: str, status: str,
+                                 priority: Optional[int] = None,
+                                 position: Optional[int] = None,
+                                 progress: Optional[int] = None,
+                                 eta: Optional[str] = None,
+                                 message: Optional[str] = None,
+                                 worker_id: Optional[str] = None) -> BaseModel:
+        """
+        Create a job update message.
+        
+        Args:
+            job_id: ID of the job
+            status: Job status
+            priority: Optional job priority
+            position: Optional position in queue
+            progress: Optional progress percentage
+            eta: Optional estimated time of completion
+            message: Optional status message
+            worker_id: Optional ID of the worker processing the job
+            
+        Returns:
+            BaseModel: Job update message model
+        """
+        pass
+    
+    @abstractmethod
+    def create_job_available_message(self, job_id: str, job_type: str,
+                                    priority: Optional[int] = 0,
+                                    job_request_payload: Optional[Dict[str, Any]] = None) -> BaseModel:
+        """
+        Create a job available message.
+        
+        Args:
+            job_id: ID of the available job
+            job_type: Type of the job
+            priority: Optional job priority
+            job_request_payload: Optional job request payload
+            
+        Returns:
+            BaseModel: Job available message model
+        """
+        pass
+    
+    @abstractmethod
+    def create_job_completed_message(self, job_id: str, status: str = "completed",
+                                    priority: Optional[int] = None,
+                                    position: Optional[int] = None,
+                                    result: Optional[Dict[str, Any]] = None) -> BaseModel:
+        """
+        Create a job completed message.
+        
+        Args:
+            job_id: ID of the completed job
+            status: Job status
+            priority: Optional job priority
+            position: Optional position in queue
+            result: Optional job result
+            
+        Returns:
+            BaseModel: Job completed message model
         """
         pass
     
