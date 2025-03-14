@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# Interface for  message handling
+# Interface for message handling
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, WebSocket
 
-# Import the specific message types for type safety
-from ..message_models import RegisterWorkerMessage
+# Import base message types for type safety
+from ..core_types.base_messages import BaseMessage
 
 class MessageHandlerInterface(ABC):
     """
@@ -82,7 +82,7 @@ class MessageHandlerInterface(ABC):
         pass
     
     @abstractmethod
-    async def handle_register_worker(self, worker_id: str, message: RegisterWorkerMessage) -> None:
+    async def handle_register_worker(self, worker_id: str, message: BaseMessage) -> None:
         """
         Handle worker registration.
         

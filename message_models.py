@@ -3,59 +3,24 @@
 import json
 import time
 import uuid
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, TypeVar, Callable, Union
 from pydantic import BaseModel, Field, field_validator
 from .interfaces.message_models_interface import MessageModelsInterface
 from .utils.logger import logger
 
-# WebSocket message types
-class MessageType:
-    # Client to Server Messages
-    SUBMIT_JOB = "submit_job"
-    GET_JOB_STATUS = "get_job_status"
-    REGISTER_WORKER = "register_worker"
-    UPDATE_JOB_PROGRESS = "update_job_progress"
-    COMPLETE_JOB = "complete_job"
-    FAIL_JOB = "fail_job"
-    GET_STATS = "get_stats"
-    SUBSCRIBE_STATS = "subscribe_stats"
-    SUBSCRIBE_JOB = "subscribe_job"
-    
-    # Worker Status Messages
-    WORKER_HEARTBEAT = "worker_heartbeat"
-    WORKER_STATUS = "worker_status"
-    CLAIM_JOB = "claim_job"
-    JOB_CLAIMED = "job_claimed"
-    
-    # Server to Client Messages
-    JOB_ACCEPTED = "job_accepted"
-    JOB_STATUS = "job_status"
-    JOB_UPDATE = "job_update"
-    JOB_ASSIGNED = "job_assigned"
-    JOB_COMPLETED = "job_completed"
-    JOB_AVAILABLE = "job_available"
-    WORKER_REGISTERED = "worker_registered"
-    ERROR = "error"
-    STATS_RESPONSE = "stats_response"
-    
-    # Monitor Messages
-    STAY_ALIVE = "stay_alive"
-    STAY_ALIVE_RESPONSE = "stay_alive_response"
-    
-    # Connection Messages
-    CONNECTION_ESTABLISHED = "connection_established"
+# Import base message types from core_types module
+from .core_types.base_messages import (
+    BaseMessage,
+    MessageType
+)
 
-# Base message class
-class BaseMessage(BaseModel):
-    type: str
-    timestamp: float = Field(default_factory=time.time)
-
-# Core Client to Server Messages
+# Client to Server Messages
 class SubmitJobMessage(BaseMessage):
     type: str = MessageType.SUBMIT_JOB
     job_type: str
     priority: int = 0
     payload: Dict[str, Any]
+    timestamp: float = Field(default_factory=time.time)
     
     @field_validator('priority')
     def validate_priority(cls, v):
@@ -63,32 +28,103 @@ class SubmitJobMessage(BaseMessage):
             raise ValueError("Priority must be between 0 and 10")
         return v
 
-class GetJobStatusMessage(BaseMessage):
-    type: str = MessageType.GET_JOB_STATUS
+# Renamed from GetJobStatusMessage to follow a consistent request-response naming pattern
+class RequestJobStatusMessage(BaseMessage):
+    type: str = MessageType.REQUEST_JOB_STATUS
     job_id: str
+    timestamp: float = Field(default_factory=time.time)
+    
+# Keep the old class for backward compatibility
+GetJobStatusMessage = RequestJobStatusMessage
 
+# Renamed from GetStatsMessage to follow a consistent request-response naming pattern
+class RequestStatsMessage(BaseMessage):
+    type: str = MessageType.REQUEST_STATS
+    timestamp: float = Field(default_factory=time.time)
+    
+# Keep the old class for backward compatibility
+GetStatsMessage = RequestStatsMessage
+
+class SubscribeStatsMessage(BaseMessage):
+    type: str = MessageType.SUBSCRIBE_STATS
+    enabled: bool = True
+    timestamp: float = Field(default_factory=time.time)
+
+class SubscribeJobMessage(BaseMessage):
+    type: str = MessageType.SUBSCRIBE_JOB
+    job_id: str
+    timestamp: float = Field(default_factory=time.time)
+
+
+# Worker to Server Messages
 class RegisterWorkerMessage(BaseMessage):
     type: str = MessageType.REGISTER_WORKER
-    machine_id: str
-    gpu_id: int
+    worker_id: str
+    timestamp: float = Field(default_factory=time.time)
 
 class UpdateJobProgressMessage(BaseMessage):
     type: str = MessageType.UPDATE_JOB_PROGRESS
     job_id: str
-    machine_id: str
-    gpu_id: int
+    worker_id: str
     progress: int
     status: str = "processing"
     message: Optional[str] = None
+    timestamp: float = Field(default_factory=time.time)
+
+class ClaimJobMessage(BaseMessage):
+    type: str = MessageType.CLAIM_JOB
+    worker_id: str
+    job_id: str
+    claim_timeout: Optional[int] = 30
+    timestamp: float = Field(default_factory=time.time)
 
 class CompleteJobMessage(BaseMessage):
     type: str = MessageType.COMPLETE_JOB
     job_id: str
-    machine_id: str
-    gpu_id: int
+    worker_id: str
     result: Optional[Dict[str, Any]] = None
+    timestamp: float = Field(default_factory=time.time)
 
-# Core Server to Client Messages
+class FailJobMessage(BaseMessage):
+    type: str = MessageType.FAIL_JOB
+    job_id: str
+    worker_id: str
+    error: Optional[str] = None
+    timestamp: float = Field(default_factory=time.time)
+
+
+# Worker Heartbeat and Status Messages
+class WorkerHeartbeatMessage(BaseMessage):
+    type: str = MessageType.WORKER_HEARTBEAT
+    worker_id: str
+    status: Optional[str] = "idle"
+    load: Optional[float] = 0.0
+    timestamp: float = Field(default_factory=time.time)
+    
+class WorkerStatusMessage(BaseMessage):
+    type: str = MessageType.WORKER_STATUS
+    message_id: Optional[str] = None
+    worker_id: str
+    status: Optional[str] = "idle"
+    capabilities: Optional[Dict[str, Any]] = None
+    timestamp: float = Field(default_factory=time.time)
+    
+
+# Server to Client Messages
+class SubscriptionConfirmedMessage(BaseMessage):
+    """Message for confirming subscription to job status updates or monitor channels"""
+    type: str = MessageType.SUBSCRIPTION_CONFIRMED
+    job_id: str
+    monitor_id: Optional[str] = None
+    channels: Optional[List[str]] = None
+    timestamp: float = Field(default_factory=time.time)
+
+class JobNotificationsSubscribedMessage(BaseMessage):
+    """Message for confirming subscription to job notifications"""
+    type: str = MessageType.JOB_NOTIFICATIONS_SUBSCRIBED
+    worker_id: str
+    timestamp: float = Field(default_factory=time.time)
+
 class JobAcceptedMessage(BaseMessage):
     type: str = MessageType.JOB_ACCEPTED
     job_id: str
@@ -96,9 +132,11 @@ class JobAcceptedMessage(BaseMessage):
     position: Optional[int] = None
     estimated_start: Optional[str] = None
     notified_workers: Optional[int] = 0
+    timestamp: float = Field(default_factory=time.time)
 
-class JobStatusMessage(BaseMessage):
-    type: str = MessageType.JOB_STATUS
+# Renamed from JobStatusMessage to follow a consistent request-response naming pattern
+class ResponseJobStatusMessage(BaseMessage):
+    type: str = MessageType.RESPONSE_JOB_STATUS
     job_id: str
     status: str
     progress: Optional[int] = None
@@ -107,95 +145,33 @@ class JobStatusMessage(BaseMessage):
     completed_at: Optional[float] = None
     result: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
+    timestamp: float = Field(default_factory=time.time)
+    
+# Keep the old class for backward compatibility
+JobStatusMessage = ResponseJobStatusMessage
 
-class JobUpdateMessage(BaseMessage):
-    type: str = MessageType.JOB_UPDATE
-    job_id: str
-    status: str
-    priority: Optional[int] = None
-    position: Optional[int] = None
-    progress: Optional[int] = None
-    eta: Optional[str] = None
-    message: Optional[str] = None
-    worker_id: Optional[str] = None
+# NOTE: JobUpdateMessage has been removed as we now use UpdateJobProgressMessage for both worker-to-server and server-to-client communication
 
-class JobAssignedMessage(BaseMessage):
-    type: str = MessageType.JOB_ASSIGNED
-    job_id: str
-    job_type: str
-    priority: int
-    params: Dict[str, Any]
-
+# NOTE: JobCompletedMessage now uses COMPLETE_JOB instead of JOB_COMPLETED to consolidate message types
 class JobCompletedMessage(BaseMessage):
-    type: str = MessageType.JOB_COMPLETED
+    type: str = MessageType.COMPLETE_JOB
     job_id: str
     status: str = "completed"
     priority: Optional[int] = None
     position: Optional[int] = None
     result: Optional[Dict[str, Any]] = None
+    timestamp: float = Field(default_factory=time.time)
 
 class ErrorMessage(BaseMessage):
     type: str = MessageType.ERROR
     error: str
     details: Optional[Dict[str, Any]] = None
+    timestamp: float = Field(default_factory=time.time)
 
 class WorkerRegisteredMessage(BaseMessage):
     type: str = MessageType.WORKER_REGISTERED
     worker_id: str
     status: str = "active"
-
-# Simple stats models
-class SubscribeStatsMessage(BaseMessage):
-    type: str = MessageType.SUBSCRIBE_STATS
-    enabled: bool = True
-
-class GetStatsMessage(BaseMessage):
-    type: str = MessageType.GET_STATS
-
-class StatsResponseMessage(BaseMessage):
-    type: str = MessageType.STATS_RESPONSE
-    stats: Dict[str, Any]
-
-class SubscribeJobMessage(BaseMessage):
-    type: str = MessageType.SUBSCRIBE_JOB
-    job_id: str
-    
-# Worker Heartbeat and Status Messages
-class WorkerHeartbeatMessage(BaseMessage):
-    type: str = MessageType.WORKER_HEARTBEAT
-    worker_id: str
-    status: Optional[str] = "idle"
-    load: Optional[float] = 0.0
-    
-# Worker Status Message
-class WorkerStatusMessage(BaseMessage):
-    type: str = MessageType.WORKER_STATUS
-    worker_id: str
-    status: Optional[str] = "idle"
-    capabilities: Optional[Dict[str, Any]] = None
-
-class ClaimJobMessage(BaseMessage):
-    type: str = MessageType.CLAIM_JOB
-    worker_id: str
-    job_id: str
-    claim_timeout: Optional[int] = 30
-
-class JobClaimedMessage(BaseMessage):
-    type: str = MessageType.JOB_CLAIMED
-    job_id: str
-    worker_id: str
-    success: bool
-    job_data: Optional[Dict[str, Any]] = None
-    message: Optional[str] = None
-    
-# Monitor Messages
-class StayAliveMessage(BaseMessage):
-    type: str = MessageType.STAY_ALIVE
-    monitor_id: str
-    timestamp: float = Field(default_factory=time.time)
-
-class StayAliveResponseMessage(BaseMessage):
-    type: str = MessageType.STAY_ALIVE_RESPONSE
     timestamp: float = Field(default_factory=time.time)
 
 # Job Notification Messages
@@ -203,13 +179,63 @@ class JobAvailableMessage(BaseMessage):
     type: str = MessageType.JOB_AVAILABLE
     job_id: str
     job_type: str
-    priority: int | None = 0
-    job_request_payload: Dict[str, Any] | None = None
+    priority: Optional[int] = 0
+    job_request_payload: Optional[Dict[str, Any]] = None
+    timestamp: float = Field(default_factory=time.time)
 
-# Connection Messages
+class JobAssignedMessage(BaseMessage):
+    type: str = MessageType.JOB_ASSIGNED
+    job_id: str
+    worker_id: str
+    job_type: str
+    priority: int
+    params: Dict[str, Any]
+    timestamp: float = Field(default_factory=time.time)
+
+# JobClaimedMessage removed - functionality handled by JobAssignedMessage
+
+
+# Simple stats models
+
+
+# Monitor to Server
+# Renamed from StatsResponseMessage to follow a consistent request-response naming pattern
+class ResponseStatsMessage(BaseMessage):
+    type: str = MessageType.RESPONSE_STATS
+    stats: Dict[str, Any]
+    timestamp: float = Field(default_factory=time.time)
+    
+# Keep the old class for backward compatibility
+StatsResponseMessage = ResponseStatsMessage
+
+# Server to Monitor
+class StatsBroadcastMessage(BaseMessage):
+    """Message for broadcasting comprehensive system status to monitors"""
+    type: str = MessageType.STATS_BROADCAST
+    message_id: Optional[str] = None
+    connections: Dict[str, List[str]]
+    workers: Dict[str, Dict[str, Any]]
+    subscriptions: Dict[str, Any]
+    system: Optional[Dict[str, Any]] = None
+
+
+# Connections All
 class ConnectionEstablishedMessage(BaseMessage):
     type: str = MessageType.CONNECTION_ESTABLISHED
     message: str = "Connection established"
+
+# Acknowledgment Messages
+class AckMessage(BaseMessage):
+    """Message for acknowledging receipt of a message"""
+    type: str = MessageType.ACK
+    message_id: Optional[str] = None
+    original_id: str
+    original_type: Optional[str] = None
+
+class UnknownMessage(BaseMessage):
+    """Message for unknown message types"""
+    type: str = MessageType.UNKNOWN
+    content: str
 
 class MessageModels(MessageModelsInterface):
     """
@@ -218,6 +244,24 @@ class MessageModels(MessageModelsInterface):
     This class provides concrete implementations of the message model
     creation and validation methods defined in the interface.
     """
+    T = TypeVar('T', bound=BaseMessage)
+    
+    def _try_parse_message(self, create_func: Callable[[], T], message_type: str) -> Optional[T]:
+        """
+        Helper method to safely parse a message with consistent error handling.
+        
+        Args:
+            create_func: A function that creates and returns a message object
+            message_type: The type of message being parsed (for error logging)
+            
+
+            Optional[T]: The parsed message object or None if parsing failed
+        """
+        try:
+            return create_func()
+        except Exception as e:
+            logger.error(f"Error parsing {message_type} message: {e}")
+            return None
     
     def parse_message(self, data: Dict[str, Any]) -> Optional[BaseMessage]:
         """
@@ -234,78 +278,191 @@ class MessageModels(MessageModelsInterface):
         
         message_type = data.get("type")
         
-        # For submit_job messages
-        if message_type == MessageType.SUBMIT_JOB:
-            try:
-                return SubmitJobMessage(
-                    type=MessageType.SUBMIT_JOB,
-                    job_type=data.get("job_type", "unknown"),
-                    priority=data.get("priority", 0),
-                    payload=data.get("payload", {})
+        match(message_type):
+            case MessageType.SUBMIT_JOB:
+                return self._try_parse_message(
+                    lambda: SubmitJobMessage(
+                        type=MessageType.SUBMIT_JOB,
+                        job_type=data.get("job_type", "unknown"),
+                        priority=data.get("priority", 0),
+                        payload=data.get("payload", {}),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
                 )
-            except Exception as e:
-                logger.error(f"Error parsing submit_job message: {e}")
-                return None
-        
-        # For get_job_status messages
-        elif message_type == MessageType.GET_JOB_STATUS:
-            try:
-                return GetJobStatusMessage(
-                    type=MessageType.GET_JOB_STATUS,
-                    job_id=data.get("job_id", "")
+            case MessageType.REQUEST_JOB_STATUS:
+                return self._try_parse_message(
+                    lambda: RequestJobStatusMessage(
+                        type=MessageType.REQUEST_JOB_STATUS,
+                        job_id=data.get("job_id", ""),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
                 )
-            except Exception as e:
-                logger.error(f"Error parsing get_job_status message: {e}")
-                return None
-        
-        # For subscribe_job messages
-        elif message_type == MessageType.SUBSCRIBE_JOB:
-            try:
-                return SubscribeJobMessage(
-                    type=MessageType.SUBSCRIBE_JOB,
-                    job_id=data.get("job_id", "")
+            case MessageType.SUBSCRIBE_JOB:
+                return self._try_parse_message(
+                    lambda: SubscribeJobMessage(
+                        type=MessageType.SUBSCRIBE_JOB,
+                        job_id=data.get("job_id", ""),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
                 )
-            except Exception as e:
-                logger.error(f"Error parsing subscribe_job message: {e}")
-                return None
-        
-        # For subscribe_stats messages
-        elif message_type == MessageType.SUBSCRIBE_STATS:
-            try:
-                return SubscribeStatsMessage(
-                    type=MessageType.SUBSCRIBE_STATS
+            case MessageType.SUBSCRIBE_STATS:
+                return self._try_parse_message(
+                    lambda: SubscribeStatsMessage(
+                        type=MessageType.SUBSCRIBE_STATS,
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
                 )
-            except Exception as e:
-                logger.error(f"Error parsing subscribe_stats message: {e}")
-                return None
-        
-        # For get_stats messages
-        elif message_type == MessageType.GET_STATS:
-            try:
-                return GetStatsMessage(
-                    type=MessageType.GET_STATS
+            case MessageType.REQUEST_STATS:
+                return self._try_parse_message(
+                    lambda: RequestStatsMessage(
+                        type=MessageType.REQUEST_STATS,
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
                 )
-            except Exception as e:
-                logger.error(f"Error parsing get_stats message: {e}")
-                return None
-        
-        # For connection_established messages
-        elif message_type == MessageType.CONNECTION_ESTABLISHED:
-            try:
-                return ConnectionEstablishedMessage(
-                    type=MessageType.CONNECTION_ESTABLISHED,
-                    message=data.get("message", "Connection established")
+            case MessageType.CONNECTION_ESTABLISHED:
+                return self._try_parse_message(
+                    lambda: ConnectionEstablishedMessage(
+                        type=MessageType.CONNECTION_ESTABLISHED,
+                        message=data.get("message", "Connection established"),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
                 )
-            except Exception as e:
-                logger.error(f"Error parsing connection_established message: {e}")
+            case MessageType.REGISTER_WORKER:
+                return self._try_parse_message(
+                    lambda: RegisterWorkerMessage(
+                        type=MessageType.REGISTER_WORKER,
+                        worker_id=data.get("worker_id", ""),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case MessageType.UPDATE_JOB_PROGRESS:
+                return self._try_parse_message(
+                    lambda: UpdateJobProgressMessage(
+                        type=MessageType.UPDATE_JOB_PROGRESS,
+                        job_id=data.get("job_id", ""),
+                        worker_id=data.get("worker_id", ""),
+                        progress=data.get("progress", 0),
+                        status=data.get("status", "processing"),
+                        message=data.get("message", None),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case MessageType.COMPLETE_JOB:
+                return self._try_parse_message(
+                    lambda: CompleteJobMessage(
+                        type=MessageType.COMPLETE_JOB,
+                        job_id=data.get("job_id", ""),
+                        worker_id=data.get("worker_id", ""),
+                        result=data.get("result", {}),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case MessageType.WORKER_HEARTBEAT:
+                return self._try_parse_message(
+                    lambda: WorkerHeartbeatMessage(
+                        type=MessageType.WORKER_HEARTBEAT,
+                        worker_id=data.get("worker_id", ""),
+                        status=data.get("status", "idle"),
+                        load=data.get("load", 0.0),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case MessageType.WORKER_STATUS:
+                return self._try_parse_message(
+                    lambda: WorkerStatusMessage(
+                        type=MessageType.WORKER_STATUS,
+                        message_id=data.get("message_id", None),
+                        worker_id=data.get("worker_id", ""),
+                        status=data.get("status", "idle"),
+                        capabilities=data.get("capabilities", {}),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case MessageType.CLAIM_JOB:
+                return self._try_parse_message(
+                    lambda: ClaimJobMessage(
+                        type=MessageType.CLAIM_JOB,
+                        worker_id=data.get("worker_id", ""),
+                        job_id=data.get("job_id", ""),
+                        claim_timeout=data.get("claim_timeout", 30),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            # Server-to-Worker Messages
+            case MessageType.JOB_ASSIGNED:
+                return self._try_parse_message(
+                    lambda: JobAssignedMessage(
+                        type=MessageType.JOB_ASSIGNED,
+                        job_id=data.get("job_id", ""),
+                        worker_id=data.get("worker_id", ""),
+                        job_type=data.get("job_type", ""),
+                        priority=data.get("priority", 0),
+                        params=data.get("params", {}),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case MessageType.JOB_AVAILABLE:
+                return self._try_parse_message(
+                    lambda: JobAvailableMessage(
+                        type=MessageType.JOB_AVAILABLE,
+                        job_id=data.get("job_id", ""),
+                        job_type=data.get("job_type", ""),
+                        priority=data.get("priority", 0),
+                        job_request_payload=data.get("job_request_payload", {}),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case MessageType.WORKER_REGISTERED:
+                return self._try_parse_message(
+                    lambda: WorkerRegisteredMessage(
+                        type=MessageType.WORKER_REGISTERED,
+                        worker_id=data.get("worker_id", ""),
+                        status=data.get("status", "active"),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            # JOB_CLAIMED case removed - functionality handled by JOB_ASSIGNED
+            case MessageType.ERROR:
+                return self._try_parse_message(
+                    lambda: ErrorMessage(
+                        type=MessageType.ERROR,
+                        error=data.get("error", "Unknown error"),
+                        details=data.get("details", None),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case MessageType.FAIL_JOB:
+                return self._try_parse_message(
+                    lambda: FailJobMessage(
+                        type=MessageType.FAIL_JOB,
+                        job_id=data.get("job_id", ""),
+                        worker_id=data.get("worker_id", ""),
+                        error=data.get("error", None),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            case _:
+                logger.warning(f"Unknown message type: {message_type}")
                 return None
-        
-        # For other message types, return None
-        else:
-            logger.warning(f"Unknown message type: {message_type}")
-            return None
     
-    def create_error_message(self, error: str, details: Optional[Dict[str, Any]] = None) -> BaseModel:
+    def create_error_message(self, error: str, details: Optional[Dict[str, Any]] = None) -> BaseMessage:
         """
         Create an error message.
         
@@ -314,7 +471,7 @@ class MessageModels(MessageModelsInterface):
             details: Optional error details
             
         Returns:
-            BaseModel: Error message model
+            BaseMessage: Error message model
         """
         return ErrorMessage(
             type=MessageType.ERROR,
@@ -325,7 +482,7 @@ class MessageModels(MessageModelsInterface):
     def create_job_accepted_message(self, job_id: str, status: str = "pending", 
                                    position: Optional[int] = None,
                                    estimated_start: Optional[str] = None,
-                                   notified_workers: Optional[int] = 0) -> BaseModel:
+                                   notified_workers: Optional[int] = 0) -> BaseMessage:
         """
         Create a job accepted message.
         
@@ -337,7 +494,7 @@ class MessageModels(MessageModelsInterface):
             notified_workers: Optional number of workers notified
             
         Returns:
-            BaseModel: Job accepted message model
+            BaseMessage: Job accepted message model
         """
         return JobAcceptedMessage(
             type=MessageType.JOB_ACCEPTED,
@@ -348,15 +505,16 @@ class MessageModels(MessageModelsInterface):
             notified_workers=notified_workers
         )
     
-    def create_job_status_message(self, job_id: str, status: str, 
-                                 progress: Optional[int] = None,
-                                 worker_id: Optional[str] = None,
-                                 started_at: Optional[float] = None,
-                                 completed_at: Optional[float] = None,
-                                 result: Optional[Dict[str, Any]] = None,
-                                 message: Optional[str] = None) -> BaseModel:
+    # Renamed from create_job_status_message to follow a consistent request-response naming pattern
+    def create_response_job_status_message(self, job_id: str, status: str, 
+                                        progress: Optional[int] = None,
+                                        worker_id: Optional[str] = None,
+                                        started_at: Optional[float] = None,
+                                        completed_at: Optional[float] = None,
+                                        result: Optional[Dict[str, Any]] = None,
+                                        message: Optional[str] = None) -> BaseMessage:
         """
-        Create a job status message.
+        Create a job status response message.
         
         Args:
             job_id: ID of the job
@@ -369,10 +527,45 @@ class MessageModels(MessageModelsInterface):
             message: Optional status message
             
         Returns:
-            BaseModel: Job status message model
+            ResponseJobStatusMessage: Job status response message model
         """
-        return JobStatusMessage(
-            type=MessageType.JOB_STATUS,
+        return ResponseJobStatusMessage(
+            type=MessageType.RESPONSE_JOB_STATUS,
+            job_id=job_id,
+            status=status,
+            progress=progress,
+            worker_id=worker_id,
+            started_at=started_at,
+            completed_at=completed_at,
+            result=result,
+            message=message
+        )
+        
+    # Keep the old method for backward compatibility
+    def create_job_status_message(self, job_id: str, status: str, 
+                                 progress: Optional[int] = None,
+                                 worker_id: Optional[str] = None,
+                                 started_at: Optional[float] = None,
+                                 completed_at: Optional[float] = None,
+                                 result: Optional[Dict[str, Any]] = None,
+                                 message: Optional[str] = None) -> BaseMessage:
+        """
+        Create a job status message (alias for create_response_job_status_message).
+        
+        Args:
+            job_id: ID of the job
+            status: Job status
+            progress: Optional progress percentage
+            worker_id: Optional ID of the worker processing the job
+            started_at: Optional timestamp when job started
+            completed_at: Optional timestamp when job completed
+            result: Optional job result
+            message: Optional status message
+            
+        Returns:
+            JobStatusMessage: Job status message model
+        """
+        return self.create_response_job_status_message(
             job_id=job_id,
             status=status,
             progress=progress,
@@ -383,52 +576,16 @@ class MessageModels(MessageModelsInterface):
             message=message
         )
     
-    def create_job_update_message(self, job_id: str, status: str,
-                                 priority: Optional[int] = None,
-                                 position: Optional[int] = None,
-                                 progress: Optional[int] = None,
-                                 eta: Optional[str] = None,
-                                 message: Optional[str] = None,
-                                 worker_id: Optional[str] = None) -> BaseModel:
-        """
-        Create a job update message.
-        
-        Args:
-            job_id: ID of the job
-            status: Job status
-            priority: Optional job priority
-            position: Optional position in queue
-            progress: Optional progress percentage
-            eta: Optional estimated time of completion
-            message: Optional status message
-            worker_id: Optional ID of the worker processing the job
-            
-        Returns:
-            BaseModel: Job update message model
-        """
-        return JobUpdateMessage(
-            type=MessageType.JOB_UPDATE,
-            job_id=job_id,
-            status=status,
-            priority=priority,
-            position=position,
-            progress=progress,
-            eta=eta,
-            message=message,
-            worker_id=worker_id
-        )
-    
     def create_worker_registered_message(self, worker_id: str, 
-                                        status: str = "active") -> BaseModel:
+                                        status: str = "active") -> BaseMessage:
         """
         Create a worker registered message.
-        
         Args:
             worker_id: ID of the registered worker
             status: Worker status
             
         Returns:
-            BaseModel: Worker registered message model
+            WorkerRegisteredMessage: Worker registered message model
         """
         return WorkerRegisteredMessage(
             type=MessageType.WORKER_REGISTERED,
@@ -438,7 +595,7 @@ class MessageModels(MessageModelsInterface):
     
     def create_job_available_message(self, job_id: str, job_type: str,
                                     priority: Optional[int] = 0,
-                                    job_request_payload: Optional[Dict[str, Any]] = None) -> BaseModel:
+                                    job_request_payload: Optional[Dict[str, Any]] = None) -> BaseMessage:
         """
         Create a job available message.
         
@@ -449,7 +606,7 @@ class MessageModels(MessageModelsInterface):
             job_request_payload: Optional job request payload
             
         Returns:
-            BaseModel: Job available message model
+            BaseMessage: Job available message model
         """
         return JobAvailableMessage(
             type=MessageType.JOB_AVAILABLE,
@@ -462,7 +619,7 @@ class MessageModels(MessageModelsInterface):
     def create_job_completed_message(self, job_id: str, status: str = "completed",
                                     priority: Optional[int] = None,
                                     position: Optional[int] = None,
-                                    result: Optional[Dict[str, Any]] = None) -> BaseModel:
+                                    result: Optional[Dict[str, Any]] = None) -> BaseMessage:
         """
         Create a job completed message.
         
@@ -474,10 +631,11 @@ class MessageModels(MessageModelsInterface):
             result: Optional job result
             
         Returns:
-            BaseModel: Job completed message model
+            BaseMessage: Job completed message model
         """
+        # NOTE: Now using COMPLETE_JOB instead of JOB_COMPLETED to consolidate message types
         return JobCompletedMessage(
-            type=MessageType.JOB_COMPLETED,
+            type=MessageType.COMPLETE_JOB,
             job_id=job_id,
             status=status,
             priority=priority,
@@ -542,22 +700,19 @@ class MessageModels(MessageModelsInterface):
             return False
         
         # Check for required fields
-        required_fields = ["machine_id", "gpu_id"]
+        required_fields = ["worker_id"]
         for field in required_fields:
             if field not in data:
                 return False
         
-        # Ensure machine_id is a string
-        if not isinstance(data["machine_id"], str):
-            return False
-        
-        # Ensure gpu_id is an integer
-        if not isinstance(data["gpu_id"], int):
+        # Ensure worker_id is a string
+        if not isinstance(data["worker_id"], str):
             return False
         
         return True
     
-    def create_stats_response_message(self, stats: Dict[str, Any]) -> BaseModel:
+    # Renamed from create_stats_response_message to follow a consistent request-response naming pattern
+    def create_response_stats_message(self, stats: Dict[str, Any]) -> ResponseStatsMessage:
         """
         Create a stats response message.
         
@@ -565,10 +720,86 @@ class MessageModels(MessageModelsInterface):
             stats: System statistics
             
         Returns:
-            BaseModel: Stats response message model
+            ResponseStatsMessage: Stats response message model
         """
-        return StatsResponseMessage(
-            type=MessageType.STATS_RESPONSE,
+        return ResponseStatsMessage(
+            type=MessageType.RESPONSE_STATS,
             stats=stats,
             timestamp=time.time()
         )
+        
+    # Keep the old method for backward compatibility
+    def create_stats_response_message(self, stats: Dict[str, Any]) -> StatsResponseMessage:
+        """
+        Create a stats response message (alias for create_response_stats_message).
+        
+        Args:
+            stats: System statistics
+            
+        Returns:
+            StatsResponseMessage: Stats response message model
+        """
+        return self.create_response_stats_message(stats)
+    
+    def create_unknown_message(self, content: str) -> UnknownMessage:
+        """
+        Create a message for unknown message types.
+        
+        Args:
+            content: Message content
+            
+        Returns:
+            UnknownMessage: Unknown message model
+        """
+        return UnknownMessage(
+            type=MessageType.UNKNOWN,
+            content=content,
+            timestamp=time.time()
+        )
+    
+    def create_ack_message(self, original_id: str) -> AckMessage:
+        """
+        Create an acknowledgment message.
+        
+        Args:
+            original_id: ID of the original message being acknowledged
+            
+        Returns:
+            AckMessage: Acknowledgment message model
+        """
+        return AckMessage(
+            type=MessageType.ACK,
+            message_id=f"ack-{int(time.time())}",
+            original_id=original_id,
+            timestamp=time.time()
+        )
+    
+    def create_subscription_confirmed_message(self, job_id: str) -> SubscriptionConfirmedMessage:
+        """
+        Create a subscription confirmed message.
+        
+        Args:
+            job_id: ID of the job being subscribed to
+            
+        Returns:
+            BaseMessage: Subscription confirmed message model
+        """
+        return SubscriptionConfirmedMessage(
+            type=MessageType.SUBSCRIPTION_CONFIRMED,
+            job_id=job_id,
+            timestamp=time.time()
+        )
+    
+    def create_job_notifications_subscribed_message(self, worker_id: str) -> JobNotificationsSubscribedMessage:
+        """
+        Create a job notifications subscribed message.
+        
+        Returns:
+            JobNotificationsSubscribedMessage: Job notifications subscribed message model
+        """
+        return JobNotificationsSubscribedMessage(
+            type=MessageType.JOB_NOTIFICATIONS_SUBSCRIBED,
+            worker_id=worker_id,
+            timestamp=time.time()
+        )
+

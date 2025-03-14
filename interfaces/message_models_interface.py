@@ -2,7 +2,9 @@
 # Interface for message models
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Union, Type
-from pydantic import BaseModel
+
+# Import base message types
+from ..core_types.base_messages import BaseMessage
 
 class MessageModelsInterface(ABC):
     """
@@ -14,7 +16,7 @@ class MessageModelsInterface(ABC):
     """
     
     @abstractmethod
-    def parse_message(self, data: Dict[str, Any]) -> Optional[BaseModel]:
+    def parse_message(self, data: Dict[str, Any]) -> Optional[BaseMessage]:
         """
         Parse incoming message data into appropriate message model.
         
@@ -22,12 +24,12 @@ class MessageModelsInterface(ABC):
             data: Raw message data
             
         Returns:
-            Optional[BaseModel]: Parsed message model if valid, None otherwise
+            Optional[BaseMessage]: Parsed message model if valid, None otherwise
         """
         pass
     
     @abstractmethod
-    def create_error_message(self, error: str, details: Optional[Dict[str, Any]] = None) -> BaseModel:
+    def create_error_message(self, error: str, details: Optional[Dict[str, Any]] = None) -> BaseMessage:
         """
         Create an error message.
         
@@ -36,7 +38,7 @@ class MessageModelsInterface(ABC):
             details: Optional error details
             
         Returns:
-            BaseModel: Error message model
+            BaseMessage: Error message model
         """
         pass
     
@@ -44,7 +46,7 @@ class MessageModelsInterface(ABC):
     def create_job_accepted_message(self, job_id: str, status: str = "pending", 
                                    position: Optional[int] = None,
                                    estimated_start: Optional[str] = None,
-                                   notified_workers: Optional[int] = 0) -> BaseModel:
+                                   notified_workers: Optional[int] = 0) -> BaseMessage:
         """
         Create a job accepted message.
         
@@ -56,7 +58,7 @@ class MessageModelsInterface(ABC):
             notified_workers: Optional number of workers notified
             
         Returns:
-            BaseModel: Job accepted message model
+            BaseMessage: Job accepted message model
         """
         pass
     
@@ -67,7 +69,7 @@ class MessageModelsInterface(ABC):
                                  started_at: Optional[float] = None,
                                  completed_at: Optional[float] = None,
                                  result: Optional[Dict[str, Any]] = None,
-                                 message: Optional[str] = None) -> BaseModel:
+                                 message: Optional[str] = None) -> BaseMessage:
         """
         Create a job status message.
         
@@ -82,13 +84,13 @@ class MessageModelsInterface(ABC):
             message: Optional status message
             
         Returns:
-            BaseModel: Job status message model
+            BaseMessage: Job status message model
         """
         pass
     
     @abstractmethod
     def create_worker_registered_message(self, worker_id: str, 
-                                        status: str = "active") -> BaseModel:
+                                        status: str = "active") -> BaseMessage:
         """
         Create a worker registered message.
         
@@ -97,12 +99,12 @@ class MessageModelsInterface(ABC):
             status: Worker status
             
         Returns:
-            BaseModel: Worker registered message model
+            BaseMessage: Worker registered message model
         """
         pass
     
     @abstractmethod
-    def create_stats_response_message(self, stats: Dict[str, Any]) -> BaseModel:
+    def create_stats_response_message(self, stats: Dict[str, Any]) -> BaseMessage:
         """
         Create a stats response message.
         
@@ -110,7 +112,7 @@ class MessageModelsInterface(ABC):
             stats: System statistics
             
         Returns:
-            BaseModel: Stats response message model
+            BaseMessage: Stats response message model
         """
         pass
     
@@ -121,7 +123,7 @@ class MessageModelsInterface(ABC):
                                  progress: Optional[int] = None,
                                  eta: Optional[str] = None,
                                  message: Optional[str] = None,
-                                 worker_id: Optional[str] = None) -> BaseModel:
+                                 worker_id: Optional[str] = None) -> BaseMessage:
         """
         Create a job update message.
         
@@ -136,14 +138,14 @@ class MessageModelsInterface(ABC):
             worker_id: Optional ID of the worker processing the job
             
         Returns:
-            BaseModel: Job update message model
+            BaseMessage: Job update message model
         """
         pass
     
     @abstractmethod
     def create_job_available_message(self, job_id: str, job_type: str,
                                     priority: Optional[int] = 0,
-                                    job_request_payload: Optional[Dict[str, Any]] = None) -> BaseModel:
+                                    job_request_payload: Optional[Dict[str, Any]] = None) -> BaseMessage:
         """
         Create a job available message.
         
@@ -154,7 +156,7 @@ class MessageModelsInterface(ABC):
             job_request_payload: Optional job request payload
             
         Returns:
-            BaseModel: Job available message model
+            BaseMessage: Job available message model
         """
         pass
     
@@ -162,7 +164,7 @@ class MessageModelsInterface(ABC):
     def create_job_completed_message(self, job_id: str, status: str = "completed",
                                     priority: Optional[int] = None,
                                     position: Optional[int] = None,
-                                    result: Optional[Dict[str, Any]] = None) -> BaseModel:
+                                    result: Optional[Dict[str, Any]] = None) -> BaseMessage:
         """
         Create a job completed message.
         
@@ -174,7 +176,7 @@ class MessageModelsInterface(ABC):
             result: Optional job result
             
         Returns:
-            BaseModel: Job completed message model
+            BaseMessage: Job completed message model
         """
         pass
     

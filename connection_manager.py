@@ -5,7 +5,19 @@ import asyncio
 import time
 from typing import Dict, Set, List, Any, Optional, Callable
 from fastapi import WebSocket
-from .models import BaseMessage, ErrorMessage
+from .core_types.base_messages import MessageType
+from .message_models import (
+    BaseMessage, 
+    ErrorMessage,
+    ConnectionEstablishedMessage,
+    WorkerStatusMessage,
+    StatsResponseMessage,
+    StatsBroadcastMessage,
+    UnknownMessage,
+    AckMessage,
+    SubscriptionConfirmedMessage,
+    JobNotificationsSubscribedMessage
+)
 from .interfaces import ConnectionManagerInterface
 from .utils.logger import logger
 
@@ -257,7 +269,7 @@ class ConnectionManager(ConnectionManagerInterface):
         if client_id in self.stats_subscriptions:
             self.stats_subscriptions.remove(client_id)
     
-    async def send_to_client(self, client_id: str, message: Any) -> bool:
+    async def send_to_client(self, client_id: str, message: BaseMessage) -> bool:
         """Send a message to a specific client"""
         # Check client connection status
         if client_id not in self.client_connections:
@@ -290,7 +302,7 @@ class ConnectionManager(ConnectionManagerInterface):
         except Exception:
             return False
     
-    async def send_to_worker(self, worker_id: str, message: Any) -> bool:
+    async def send_to_worker(self, worker_id: str, message: BaseMessage) -> bool:
         """Send a message to a specific worker"""
         # Check worker connection status
         if worker_id not in self.worker_connections:
@@ -435,26 +447,35 @@ class ConnectionManager(ConnectionManagerInterface):
             
         # Prepare message for sending
         message_dict = None
+        is_pydantic_model = False
         
-        # Convert to dict if it's a Pydantic model
-        if hasattr(message, 'dict'):
+        # Check if it's a Pydantic model and convert to dict
+        if hasattr(message, 'model_dump'):  # Pydantic v2
+            message_dict = message.model_dump()
+            is_pydantic_model = True
+        elif hasattr(message, 'dict'):  # Pydantic v1
             message_dict = message.dict()
+            is_pydantic_model = True
         elif isinstance(message, dict):
             message_dict = message.copy()
         else:
-            # Convert to string and wrap in a dict
-            message_dict = {"content": str(message), "type": "unknown"}
+            # Create a proper UnknownMessage object for unknown message types
+            unknown_msg = UnknownMessage(content=str(message))
+            message_dict = unknown_msg.dict() if hasattr(unknown_msg, 'dict') else unknown_msg.model_dump()
             
         # Ensure message has a type
         if "type" not in message_dict:
-            message_dict["type"] = "unknown"
+            # Create a proper UnknownMessage object for messages without a type
+            unknown_msg = UnknownMessage(content="No type specified")
+            message_dict = unknown_msg.dict() if hasattr(unknown_msg, 'dict') else unknown_msg.model_dump()
             
-        # Add timestamp if not present
-        if "timestamp" not in message_dict:
+        # Add timestamp if not present and not a Pydantic model
+        if "timestamp" not in message_dict and not is_pydantic_model:
             message_dict["timestamp"] = time.time()
             
-        # Add message_id if not present for tracking
-        if "message_id" not in message_dict:
+        # Add message_id if not present for tracking and not a Pydantic model
+        # This prevents adding fields that don't exist in the Pydantic model
+        if "message_id" not in message_dict and not is_pydantic_model:
             message_dict["message_id"] = f"{message_dict['type']}-{int(time.time())}"
         
         # Convert to JSON string
@@ -486,14 +507,16 @@ class ConnectionManager(ConnectionManagerInterface):
                 successful_sends += 1
                 
                 # Send an acknowledgment message to confirm successful delivery
-                ack_message = {
-                    "type": "ack",
-                    "timestamp": time.time(),
-                    "message_id": f"ack-{int(time.time())}",
-                    "original_type": message_type,
-                    "original_id": message_dict.get("message_id", "unknown")
-                }
-                await websocket.send_text(json.dumps(ack_message))
+                # Using proper AckMessage class instead of raw dictionary
+                original_id = message_dict.get("message_id", "unknown")
+                ack_message = AckMessage(
+                    message_id=f"ack-{int(time.time())}",
+                    original_id=original_id,
+                    original_type=message_type
+                )
+                # Convert to dict based on Pydantic version
+                ack_dict = ack_message.dict() if hasattr(ack_message, 'dict') else ack_message.model_dump()
+                await websocket.send_text(json.dumps(ack_dict))
                 
             except RuntimeError as e:
                 # Schedule disconnection for websocket errors
@@ -520,36 +543,61 @@ class ConnectionManager(ConnectionManagerInterface):
         if not self.monitor_connections:
             return
             
-        # Build comprehensive status message
-        status = {
-            "type": "system_status",
-            "timestamp": time.time(),
-            "message_id": f"status-{int(time.time())}",  # Add unique message ID for tracking
-            "connections": {
-                "clients": list(self.client_connections.keys()),
-                "workers": list(self.worker_connections.keys()),
-                "monitors": list(self.monitor_connections.keys())
-            },
-            "workers": {
-                worker_id: {"status": status} 
-                for worker_id, status in self.worker_status.items()
-            },
-            "subscriptions": {
-                "stats": list(self.stats_subscriptions),
-                "job_notifications": list(self.job_notification_subscriptions),
-                "jobs": self.job_subscriptions
-            }
+        # Build comprehensive status message using the proper message model
+        # Create a dictionary of worker statuses from connection manager's knowledge
+        worker_statuses = {
+            worker_id: {"status": status, "connection_status": status} 
+            for worker_id, status in self.worker_status.items()
         }
         
+        # Ensure all connected workers have at least a basic status entry
+        for worker_id in self.worker_connections.keys():
+            if worker_id not in worker_statuses:
+                worker_statuses[worker_id] = {
+                    "status": "connected",
+                    "connection_status": "connected"
+                }
+        
+        # Create connections dictionary
+        connections = {
+            "clients": list(self.client_connections.keys()),
+            "workers": list(self.worker_connections.keys()),
+            "monitors": list(self.monitor_connections.keys())
+        }
+        
+        # Create subscriptions dictionary
+        subscriptions = {
+            "stats": list(self.stats_subscriptions),
+            "job_notifications": list(self.job_notification_subscriptions),
+            "jobs": self.job_subscriptions
+        }
+        
+        # Create the status broadcast message
+        status_message = StatsBroadcastMessage(
+            type=MessageType.STATS_BROADCAST,
+            timestamp=time.time(),
+            message_id=f"status-{int(time.time())}",
+            connections=connections,
+            workers=worker_statuses,
+            subscriptions=subscriptions
+        )
+        
         # Log the basic status structure
-        worker_count = len(status['workers']) if isinstance(status['workers'], (dict, list)) else 0
+        worker_count = len(status_message.workers) if status_message.workers else 0
         print(f"🔄 Created system status with {worker_count} workers")
         
-        # Safely access connection counts with type checking
-        client_count = len(status['connections']['clients']) if isinstance(status['connections'], dict) and isinstance(status['connections'].get('clients'), (list, set)) else 0
-        worker_count = len(status['connections']['workers']) if isinstance(status['connections'], dict) and isinstance(status['connections'].get('workers'), (list, set)) else 0
-        monitor_count = len(status['connections']['monitors']) if isinstance(status['connections'], dict) and isinstance(status['connections'].get('monitors'), (list, set)) else 0
+        # Safely access connection counts
+        client_count = len(status_message.connections.get('clients', [])) if status_message.connections else 0
+        worker_count = len(status_message.connections.get('workers', [])) if status_message.connections else 0
+        monitor_count = len(status_message.connections.get('monitors', [])) if status_message.connections else 0
         print(f"🔄 Connections: {client_count} clients, {worker_count} workers, {monitor_count} monitors")
+        
+        # Initialize system stats with basic information
+        system_stats = {
+            "queues": {"priority": 0, "standard": 0, "total": 0},
+            "jobs": {"total": 0, "status": {}},
+            "workers": {"total": worker_count, "status": {}}
+        }
         
         # Add detailed worker status from Redis if available
         if redis_service:
@@ -559,32 +607,44 @@ class ConnectionManager(ConnectionManagerInterface):
                 redis_workers_status = redis_service.get_all_workers_status()
                 
                 # Update the workers section with detailed information
-                detailed_workers = {}
-                for worker_id, worker_data in redis_workers_status.items():
-                    # Combine connection status with Redis status
-                    worker_info = worker_data.copy()
-                    
-                    # Add connection status if we have it
-                    if worker_id in self.worker_status:
-                        worker_info["connection_status"] = self.worker_status[worker_id]
-                    else:
-                        worker_info["connection_status"] = "disconnected"
-                        
-                    detailed_workers[worker_id] = worker_info
+                detailed_workers = worker_statuses.copy()  # Start with our basic status info
                 
-                # Replace the workers section with detailed information
-                status["workers"] = detailed_workers
+                for worker_id, worker_data in redis_workers_status.items():
+                    # If we already have this worker, update with Redis data
+                    if worker_id in detailed_workers:
+                        # Preserve connection_status from our basic info
+                        connection_status = detailed_workers[worker_id].get("connection_status", "unknown")
+                        # Update with Redis data
+                        detailed_workers[worker_id].update(worker_data)
+                        # Make sure connection_status is preserved
+                        detailed_workers[worker_id]["connection_status"] = connection_status
+                    else:
+                        # New worker from Redis that we didn't know about
+                        worker_info = worker_data.copy()
+                        worker_info["connection_status"] = "disconnected"  # Not in our connections
+                        detailed_workers[worker_id] = worker_info
+                
+                # Update the workers field in the status_message
+                status_message.workers = detailed_workers
                 
                 # Add system stats
-                status["system"] = redis_service.get_stats()
+                redis_stats = redis_service.get_stats()
+                if redis_stats:
+                    # Update our basic stats with Redis data
+                    system_stats.update(redis_stats)
+                    # Make sure worker count is correct
+                    if "workers" in system_stats and isinstance(system_stats["workers"], dict):
+                        system_stats["workers"]["total"] = worker_count
                 
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Error getting detailed worker status: {e}")
+                # Continue with basic stats if Redis fails
         
-
+        # Ensure system stats are included even if Redis failed
+        status_message.system = system_stats
         
         # Broadcast to all monitors
-        sent_count = await self.broadcast_to_monitors(status)
+        sent_count = await self.broadcast_to_monitors(status_message)
         
     def subscribe_worker_to_job_notifications(self, worker_id: str) -> None:
         """Subscribe a worker to job notifications"""
@@ -601,14 +661,14 @@ class ConnectionManager(ConnectionManagerInterface):
             # Update status in memory
             self.worker_status[worker_id] = status
             
-            # Create worker status update message
-            status_update = {
-                "type": "worker_status",
-                "timestamp": time.time(),
-                "message_id": f"worker-status-{int(time.time())}",
-                "worker_id": worker_id,
-                "status": status
-            }
+            # Create worker status update message using the proper message model
+            status_update = WorkerStatusMessage(
+                type=MessageType.WORKER_STATUS,
+                timestamp=time.time(),
+                message_id=f"worker-status-{int(time.time())}",
+                worker_id=worker_id,
+                status=status
+            )
             
             # Broadcast to all monitors
             await self.broadcast_to_monitors(status_update)
@@ -663,15 +723,72 @@ class ConnectionManager(ConnectionManagerInterface):
                 successful_sends += 1
         return successful_sends
     
-    async def broadcast_job_notification(self, job_notification: Dict[str, Any]) -> int:
-        """Broadcast job notification to all workers regardless of status"""
+    async def broadcast_job_notification(self, job_notification: BaseMessage) -> int:
+        """Broadcast job notification to all workers regardless of status
+        
+        Args:
+            job_notification: The notification to broadcast as a BaseMessage object
+            
+        Returns:
+            int: Number of successful sends
+        """
+        # Note: This method now only accepts BaseMessage objects to ensure type consistency
+        # All message objects in the system should inherit from BaseMessage
         successful_sends = 0
         
+        # Send to all connected workers
         for worker_id in list(self.worker_connections.keys()):
             if await self.send_to_worker(worker_id, job_notification):
                 successful_sends += 1
         
         return successful_sends
+        
+    async def forward_job_progress(self, progress_message: BaseMessage) -> bool:
+        """Forward job progress update from a worker to the subscribed client
+        
+        Args:
+            progress_message: The job progress update message (UpdateJobProgressMessage)
+            
+        Returns:
+            bool: True if the update was successfully forwarded, False otherwise
+        """
+        try:
+            # Extract job_id from the message
+            if not hasattr(progress_message, 'job_id'):
+                logger.warning(f"[JOB-PROGRESS] Message does not contain job_id: {progress_message}")
+                return False
+                
+            job_id = progress_message.job_id
+            
+            # Check if any client is subscribed to this job
+            if job_id not in self.job_subscriptions:
+                logger.debug(f"[JOB-PROGRESS] No clients subscribed to job {job_id}")
+                return False
+                
+            # Get the client ID subscribed to this job
+            client_id = self.job_subscriptions[job_id]
+            
+            # Check if the client is still connected
+            if client_id not in self.client_connections:
+                logger.warning(f"[JOB-PROGRESS] Client {client_id} subscribed to job {job_id} is no longer connected")
+                # Remove the subscription
+                del self.job_subscriptions[job_id]
+                return False
+                
+            # Forward the progress update directly to the client
+            # We use the same message format (UpdateJobProgressMessage) for consistency
+            success = await self.send_to_client(client_id, progress_message)
+            
+            if success:
+                logger.info(f"[JOB-PROGRESS] Forwarded progress update for job {job_id} to client {client_id}")
+            else:
+                logger.warning(f"[JOB-PROGRESS] Failed to forward progress update for job {job_id} to client {client_id}")
+                
+            return success
+            
+        except Exception as e:
+            logger.error(f"[JOB-PROGRESS] Error forwarding job progress update: {str(e)}")
+            return False
         
     def set_monitor_subscriptions(self, monitor_id: str, channels: List[str]) -> None:
         """Set the subscription channels for a monitor
@@ -697,17 +814,21 @@ class ConnectionManager(ConnectionManagerInterface):
         
         # Send confirmation message to the monitor
         try:
-            confirmation = {
-                "type": "subscription_confirmed",
-                "monitor_id": monitor_id,
-                "channels": channels,
-                "timestamp": time.time()
-            }
+            # Using proper SubscriptionConfirmedMessage class instead of raw dictionary
+            # Note: We need to adapt the SubscriptionConfirmedMessage to include monitor_id and channels
+            # Since our model only has job_id, we'll add these as additional fields
+            confirmation = SubscriptionConfirmedMessage(
+                job_id="monitor-subscription",  # Using a placeholder since this isn't for a specific job
+                monitor_id=monitor_id,
+                channels=channels
+            )
             
             print(f"🔍 Sending confirmation message to monitor...")
             # Create a task to send the confirmation asynchronously
             websocket = self.monitor_connections[monitor_id]
-            asyncio.create_task(websocket.send_text(json.dumps(confirmation)))
+            # Convert to dict based on Pydantic version
+            confirmation_dict = confirmation.dict() if hasattr(confirmation, 'dict') else confirmation.model_dump()
+            asyncio.create_task(websocket.send_text(json.dumps(confirmation_dict)))
             
             print(f"🔍 Confirmation message sent successfully ✅")
             logger.info(f"[MONITOR-SUB] Sent subscription confirmation to monitor {monitor_id}")
@@ -785,7 +906,7 @@ class ConnectionManager(ConnectionManagerInterface):
             logger.error(f"[JOB-UPDATE] Error sending job update for {job_id}: {str(e)}")
             return False
     
-    async def send_to_monitor(self, monitor_id: str, message: Dict[str, Any]) -> bool:
+    async def send_to_monitor(self, monitor_id: str, message: BaseMessage) -> bool:
         """Send a message to a specific monitor.
         
         Args:
@@ -832,14 +953,15 @@ class ConnectionManager(ConnectionManagerInterface):
                 self.job_notification_subscriptions.add(worker_id)
                 logger.info(f"[JOB-NOTIFY] Worker {worker_id} subscribed to job notifications")
                 
-                # Send a confirmation message to the worker
-                confirmation = {
-                    "type": "job_notifications_subscribed",
-                    "timestamp": time.time()
-                }
+                # Send a confirmation message to the worker using proper message model class
+                # Create a JobNotificationsSubscribedMessage instance
+                confirmation = JobNotificationsSubscribedMessage(worker_id=worker_id)
+                
+                # Convert to dict based on Pydantic version
+                confirmation_dict = confirmation.dict() if hasattr(confirmation, 'dict') else confirmation.model_dump()
                 
                 websocket = self.worker_connections[worker_id]
-                await websocket.send_text(json.dumps(confirmation))
+                await websocket.send_text(json.dumps(confirmation_dict))
                 return True
             else:
                 # Remove the worker from job notification subscriptions

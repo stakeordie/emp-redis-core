@@ -213,7 +213,7 @@ class EmpRedisClient {
 }
 
 // Usage example
-const client = new EmpRedisClient("ws://localhost:8001/ws/client");
+const client = new EmpRedisClient("ws://localhost:8001/ws/client/{client_id");
 
 client
   .on<JobAcceptedMessage>(MessageType.JOB_ACCEPTED, (message) => {
