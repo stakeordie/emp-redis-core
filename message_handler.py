@@ -18,7 +18,7 @@ from .message_models import (
     JobStatusMessage, WorkerRegisteredMessage, JobAvailableMessage,
     JobCompletedMessage, SubmitJobMessage, GetJobStatusMessage, RegisterWorkerMessage, 
     UpdateJobProgressMessage, CompleteJobMessage, WorkerHeartbeatMessage, WorkerStatusMessage, 
-    ClaimJobMessage, JobClaimedMessage, SubscribeJobMessage, SubscribeStatsMessage, 
+    ClaimJobMessage, ClaimJobMessage, SubscribeJobMessage, SubscribeStatsMessage, 
     GetStatsMessage, ConnectionEstablishedMessage, JobAssignedMessage, SubscriptionConfirmedMessage,
     StatsResponseMessage
 )
@@ -560,7 +560,6 @@ class MessageHandler(MessageHandlerInterface):
         # Subscribe client to future updates for this job
         await self.connection_manager.subscribe_to_job(job_id, client_id)
     
-    
     def handle_subscribe_stats(self, client_id: str) -> None:
         """
         Handle stats subscription request from a client.
@@ -690,7 +689,6 @@ class MessageHandler(MessageHandlerInterface):
         response = WorkerRegisteredMessage(worker_id=worker_id)
         await self.connection_manager.send_to_worker(worker_id, response)
         
-    
     async def handle_update_job_progress(self, worker_id: str, message: UpdateJobProgressMessage) -> None:
         """
         Handle job progress update from a worker.
@@ -863,7 +861,7 @@ class MessageHandler(MessageHandlerInterface):
                 "type": "error",
                 "error": f"Unsupported message type: {message_type}"
             }))
-        
+   
     # Background task methods
     async def _broadcast_stats_task(self) -> None:
         """
