@@ -63,28 +63,22 @@ class MessageModelsInterface(ABC):
         pass
     
     @abstractmethod
-    def create_job_status_message(self, job_id: str, status: str, 
-                                 progress: Optional[int] = None,
-                                 worker_id: Optional[str] = None,
-                                 started_at: Optional[float] = None,
-                                 completed_at: Optional[float] = None,
-                                 result: Optional[Dict[str, Any]] = None,
-                                 message: Optional[str] = None) -> BaseMessage:
+    def create_update_job_progress_message(self, job_id: str, worker_id: str,
+                                          progress: int,
+                                          status: str = "processing",
+                                          message: Optional[str] = None) -> BaseMessage:
         """
-        Create a job status message.
+        Create a job progress update message.
         
         Args:
             job_id: ID of the job
-            status: Job status
-            progress: Optional progress percentage
-            worker_id: Optional ID of the worker processing the job
-            started_at: Optional timestamp when job started
-            completed_at: Optional timestamp when job completed
-            result: Optional job result
+            worker_id: ID of the worker processing the job
+            progress: Progress percentage (0-100)
+            status: Job status (default: "processing")
             message: Optional status message
             
         Returns:
-            BaseMessage: Job status message model
+            BaseMessage: UpdateJobProgressMessage model
         """
         pass
     
@@ -113,32 +107,6 @@ class MessageModelsInterface(ABC):
             
         Returns:
             BaseMessage: Stats response message model
-        """
-        pass
-    
-    @abstractmethod
-    def create_job_update_message(self, job_id: str, status: str,
-                                 priority: Optional[int] = None,
-                                 position: Optional[int] = None,
-                                 progress: Optional[int] = None,
-                                 eta: Optional[str] = None,
-                                 message: Optional[str] = None,
-                                 worker_id: Optional[str] = None) -> BaseMessage:
-        """
-        Create a job update message.
-        
-        Args:
-            job_id: ID of the job
-            status: Job status
-            priority: Optional job priority
-            position: Optional position in queue
-            progress: Optional progress percentage
-            eta: Optional estimated time of completion
-            message: Optional status message
-            worker_id: Optional ID of the worker processing the job
-            
-        Returns:
-            BaseMessage: Job update message model
         """
         pass
     
