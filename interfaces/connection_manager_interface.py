@@ -60,7 +60,7 @@ class ConnectionManagerInterface(ABC):
         pass
     
     @abstractmethod
-    def disconnect_worker(self, worker_id: str) -> None:
+    async def disconnect_worker(self, worker_id: str) -> None:
         """
         Disconnect a worker.
         

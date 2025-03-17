@@ -80,7 +80,8 @@ class MessageType:
     #WORKER_SEND_JOB_FAILURE_TO_SERVER
     FAIL_JOB = "fail_job"                           # Worker → Server: Notifies that a job has failed
 
-
+    #SERVER_SEND_JOB_COMPLETION_ACK_TO_WORKER
+    JOB_COMPLETED_ACK = "job_completed_ack"         # Server → Worker: Acknowledges receipt of a job completion message
 
     # STATUS_MESSAGES
 
@@ -114,6 +115,9 @@ class MessageType:
 
     #4 SERVER_CONFIRM_JOB_NOTIFICATIONS_SUBSCRIBED_TO_CLIENT
     JOB_NOTIFICATIONS_SUBSCRIBED = "job_notifications_subscribed"   # Server → Client: Confirms subscription to job notifications
+    
+    # WORKER_SUBSCRIBE_JOB_NOTIFICATIONS_FROM_SERVER
+    SUBSCRIBE_JOB_NOTIFICATIONS = "subscribe_job_notifications"  # Worker → Server: Subscribes to receive job notifications
 
     #WORKER_SEND_JOB_PROGRESS
     UPDATE_JOB_PROGRESS = "update_job_progress"     # Worker → Server -> Client: Updates the progress of a job it's processing

@@ -33,17 +33,11 @@ class RequestJobStatusMessage(BaseMessage):
     type: str = MessageType.REQUEST_JOB_STATUS
     job_id: str
     timestamp: float = Field(default_factory=time.time)
-    
-# Keep the old class for backward compatibility
-GetJobStatusMessage = RequestJobStatusMessage
 
 # Renamed from GetStatsMessage to follow a consistent request-response naming pattern
 class RequestStatsMessage(BaseMessage):
     type: str = MessageType.REQUEST_STATS
     timestamp: float = Field(default_factory=time.time)
-    
-# Keep the old class for backward compatibility
-GetStatsMessage = RequestStatsMessage
 
 class SubscribeStatsMessage(BaseMessage):
     type: str = MessageType.SUBSCRIBE_STATS
@@ -60,6 +54,9 @@ class SubscribeJobMessage(BaseMessage):
 class RegisterWorkerMessage(BaseMessage):
     type: str = MessageType.REGISTER_WORKER
     worker_id: str
+    capabilities: Optional[Dict[str, Any]] = None
+    subscribe_to_jobs: bool = True  # Default to subscribing to job notifications
+    status: str = "idle"  # Default status is idle
     timestamp: float = Field(default_factory=time.time)
 
 class UpdateJobProgressMessage(BaseMessage):
@@ -92,6 +89,13 @@ class CompleteJobMessage(BaseMessage):
     result: Optional[Dict[str, Any]] = None
     timestamp: float = Field(default_factory=time.time)
 
+class JobCompletedAckMessage(BaseMessage):
+    """Message for acknowledging receipt of a job completion message"""
+    type: str = MessageType.JOB_COMPLETED_ACK
+    job_id: str
+    worker_id: str
+    timestamp: float = Field(default_factory=time.time)
+
 class FailJobMessage(BaseMessage):
     type: str = MessageType.FAIL_JOB
     job_id: str
@@ -115,6 +119,9 @@ class WorkerStatusMessage(BaseMessage):
     status: Optional[str] = "idle"
     capabilities: Optional[Dict[str, Any]] = None
     timestamp: float = Field(default_factory=time.time)
+
+# SubscribeJobNotificationsMessage has been removed
+# Its functionality is now part of RegisterWorkerMessage
     
 
 # Server to Client Messages
@@ -153,13 +160,7 @@ class ResponseJobStatusMessage(BaseMessage):
     result: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
     timestamp: float = Field(default_factory=time.time)
-    
-# Keep the old class for backward compatibility
-JobStatusMessage = ResponseJobStatusMessage
 
-# NOTE: JobUpdateMessage has been removed as we now use UpdateJobProgressMessage for both worker-to-server and server-to-client communication
-
-# NOTE: JobCompletedMessage now uses COMPLETE_JOB instead of JOB_COMPLETED to consolidate message types
 class JobCompletedMessage(BaseMessage):
     type: str = MessageType.COMPLETE_JOB
     job_id: str
@@ -199,11 +200,6 @@ class JobAssignedMessage(BaseMessage):
     params: Dict[str, Any]
     timestamp: float = Field(default_factory=time.time)
 
-# JobClaimedMessage removed - functionality handled by JobAssignedMessage
-
-
-# Simple stats models
-
 
 # Monitor to Server
 # Renamed from StatsResponseMessage to follow a consistent request-response naming pattern
@@ -211,9 +207,6 @@ class ResponseStatsMessage(BaseMessage):
     type: str = MessageType.RESPONSE_STATS
     stats: Dict[str, Any]
     timestamp: float = Field(default_factory=time.time)
-    
-# Keep the old class for backward compatibility
-StatsResponseMessage = ResponseStatsMessage
 
 # Server to Monitor
 class StatsBroadcastMessage(BaseMessage):
@@ -429,6 +422,16 @@ class MessageModels(MessageModelsInterface):
                         job_type=data.get("job_type", ""),
                         priority=data.get("priority", 0),
                         job_request_payload=data.get("job_request_payload", {}),
+                        timestamp=data.get("timestamp", time.time())
+                    ),
+                    message_type
+                )
+            
+            case MessageType.JOB_NOTIFICATIONS_SUBSCRIBED:
+                return self._try_parse_message(
+                    lambda: JobNotificationsSubscribedMessage(
+                        type=MessageType.JOB_NOTIFICATIONS_SUBSCRIBED,
+                        worker_id=data.get("worker_id", ""),
                         timestamp=data.get("timestamp", time.time())
                     ),
                     message_type
@@ -730,7 +733,7 @@ class MessageModels(MessageModelsInterface):
         )
         
     # Keep the old method for backward compatibility
-    def create_stats_response_message(self, stats: Dict[str, Any]) -> StatsResponseMessage:
+    def create_stats_response_message(self, stats: Dict[str, Any]) -> ResponseStatsMessage:
         """
         Create a stats response message (alias for create_response_stats_message).
         
@@ -738,9 +741,34 @@ class MessageModels(MessageModelsInterface):
             stats: System statistics
             
         Returns:
-            StatsResponseMessage: Stats response message model
+            ResponseStatsMessage: Stats response message model
         """
         return self.create_response_stats_message(stats)
+        
+    def create_stats_broadcast_message(self, connections: Dict[str, List[str]],
+                                      workers: Dict[str, Dict[str, Any]],
+                                      subscriptions: Dict[str, Any],
+                                      system: Optional[Dict[str, Any]] = None) -> StatsBroadcastMessage:
+        """
+        Create a stats broadcast message for monitors.
+        
+        Args:
+            connections: Dictionary of connection lists (clients, workers, monitors)
+            workers: Dictionary of worker statuses
+            subscriptions: Dictionary of subscription information
+            system: Optional system statistics from Redis
+            
+        Returns:
+            StatsBroadcastMessage: Stats broadcast message model
+        """
+        return StatsBroadcastMessage(
+            type=MessageType.STATS_BROADCAST,
+            message_id=f"stats-{int(time.time())}",
+            connections=connections,
+            workers=workers,
+            subscriptions=subscriptions,
+            system=system
+        )
     
     def create_unknown_message(self, content: str) -> UnknownMessage:
         """
@@ -798,9 +826,26 @@ class MessageModels(MessageModelsInterface):
         Returns:
             JobNotificationsSubscribedMessage: Job notifications subscribed message model
         """
+        logger.debug(f"[MessageModels] Creating job notifications subscribed message for worker {worker_id}")
         return JobNotificationsSubscribedMessage(
             type=MessageType.JOB_NOTIFICATIONS_SUBSCRIBED,
             worker_id=worker_id,
             timestamp=time.time()
+        )
+        
+    def create_job_completed_ack_message(self, job_id: str, worker_id: str) -> JobCompletedAckMessage:
+        """
+        Create a job completed acknowledgment message.
+        
+        Args:
+            job_id: ID of the completed job
+            worker_id: ID of the worker that completed the job
+            
+        Returns:
+            JobCompletedAckMessage: Job completed acknowledgment message model
+        """
+        return JobCompletedAckMessage(
+            job_id=job_id,
+            worker_id=worker_id
         )
 

@@ -17,45 +17,50 @@ class MessageHandlerInterface(ABC):
     """
     
     @abstractmethod
-    def init_routes(self, app: FastAPI) -> None:
+    async def handle_client_message(self, client_id: str, 
+                                  message_type: str,
+                                  message_data: Dict[str, Any], 
+                                  websocket: WebSocket) -> None:
         """
-        Initialize routes for the FastAPI application.
+        Handle a message from a client.
         
         Args:
-            app: FastAPI application instance
-        """
-        pass
-    
-    @abstractmethod
-    async def client_websocket(self, websocket: WebSocket, client_id: str) -> None:
-        """
-        Handle client WebSocket connections.
-        
-        Args:
-            websocket: WebSocket connection
             client_id: Client identifier
+            message_type: Type of message
+            message_data: Message data
+            websocket: WebSocket connection
         """
         pass
     
     @abstractmethod
-    async def worker_websocket(self, websocket: WebSocket, worker_id: str) -> None:
+    async def handle_worker_message(self, worker_id: str,
+                                  message_type: str,
+                                  message_data: Dict[str, Any], 
+                                  websocket: WebSocket) -> None:
         """
-        Handle worker WebSocket connections.
+        Handle a message from a worker.
         
         Args:
-            websocket: WebSocket connection
             worker_id: Worker identifier
+            message_type: Type of message
+            message_data: Message data
+            websocket: WebSocket connection
         """
         pass
     
     @abstractmethod
-    async def monitor_websocket(self, websocket: WebSocket, monitor_id: str) -> None:
+    async def handle_monitor_message(self, monitor_id: str,
+                                   message_type: str,
+                                   message_data: Dict[str, Any], 
+                                   websocket: WebSocket) -> None:
         """
-        Handle monitor WebSocket connections.
+        Handle a message from a monitor.
         
         Args:
-            websocket: WebSocket connection
             monitor_id: Monitor identifier
+            message_type: Type of message
+            message_data: Message data
+            websocket: WebSocket connection
         """
         pass
     
@@ -67,17 +72,6 @@ class MessageHandlerInterface(ABC):
         Args:
             client_id: Client identifier
             message: Submit job message
-        """
-        pass
-    
-    @abstractmethod
-    async def handle_get_job_status(self, client_id: str, job_id: str) -> None:
-        """
-        Handle job status request from a client.
-        
-        Args:
-            client_id: Client identifier
-            job_id: Job identifier
         """
         pass
     

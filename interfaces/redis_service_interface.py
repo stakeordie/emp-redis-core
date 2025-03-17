@@ -180,7 +180,7 @@ class RedisServiceInterface(ABC):
     
     # Stats and monitoring
     @abstractmethod
-    def get_stats(self) -> Dict[str, Any]:
+    def request_stats(self) -> Dict[str, Any]:
         """
         Get system statistics.
         
@@ -212,19 +212,6 @@ class RedisServiceInterface(ABC):
             
         Returns:
             int: Number of claims cleaned up
-        """
-        pass
-    
-    @abstractmethod
-    def mark_stale_workers_out_of_service(self, max_heartbeat_age: int = 120) -> int:
-        """
-        Mark workers without recent heartbeats as out of service.
-        
-        Args:
-            max_heartbeat_age: Maximum age in seconds for a worker heartbeat
-            
-        Returns:
-            int: Number of workers marked as out of service
         """
         pass
     

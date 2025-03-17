@@ -14,18 +14,21 @@ from .connection_manager import ConnectionManager
 from .message_router import MessageRouter
 from .core_types.base_messages import BaseMessage
 from .message_models import (
-    MessageModels, MessageType, ErrorMessage, JobAcceptedMessage, 
-    JobStatusMessage, WorkerRegisteredMessage, JobAvailableMessage,
-    JobCompletedMessage, SubmitJobMessage, GetJobStatusMessage, RegisterWorkerMessage, 
-    UpdateJobProgressMessage, CompleteJobMessage, WorkerHeartbeatMessage, WorkerStatusMessage, 
-    ClaimJobMessage, ClaimJobMessage, SubscribeJobMessage, SubscribeStatsMessage, 
-    GetStatsMessage, ConnectionEstablishedMessage, JobAssignedMessage, SubscriptionConfirmedMessage,
-    StatsResponseMessage
+    MessageModels, ErrorMessage, 
+    JobAcceptedMessage, WorkerRegisteredMessage,
+    JobAvailableMessage, RegisterWorkerMessage, 
+    UpdateJobProgressMessage, CompleteJobMessage, 
+    WorkerHeartbeatMessage, WorkerStatusMessage, 
+    ClaimJobMessage, ClaimJobMessage, 
+    JobAssignedMessage, SubscriptionConfirmedMessage,
+    AckMessage, JobNotificationsSubscribedMessage,
+    ResponseJobStatusMessage
+    # SubscribeJobNotificationsMessage has been removed - functionality now in RegisterWorkerMessage
 )
 from .utils.logger import logger
 
 # Module-level print to verify this file is being loaded
-print("\n\n==== MESSAGE_HANDLER.PY MODULE LOADED ====\n\n")
+# print("\n\n==== MESSAGE_HANDLER.PY MODULE LOADED ====\n\n")
 
 class MessageHandler(MessageHandlerInterface):
     """
@@ -47,341 +50,14 @@ class MessageHandler(MessageHandlerInterface):
             message_router: Message router instance
             message_models: Message models instance
         """
-        logger.debug_highlight(f"TESTIN")
-        self.redis_service = redis_service
-        self.connection_manager = connection_manager
-        self.message_router = message_router
-        self.message_models = message_models
+        # Store dependencies as instance variables
+        self.redis_service: RedisService = redis_service
+        self.connection_manager: ConnectionManager = connection_manager
+        self.message_router: MessageRouter = message_router
+        self.message_models: MessageModels = message_models
         self._background_tasks: List[asyncio.Task] = []
     
-    def init_routes(self, app: FastAPI) -> None:
-        """
-        Initialize routes for the FastAPI application.
-        
-        Args:
-            app: FastAPI application instance
-        """
-        # Print to verify this method is being called
-        logger.debug_highlight("\n\n***** REGISTERING ROUTES IN MESSAGE_HANDLER.PY ====\n\n")
-        
-        # Register WebSocket routes
-        
-        # Client WebSocket route
-        @app.websocket("/ws/client/{client_id}")
-        async def client_websocket_route(websocket: WebSocket, client_id: str):
-            logger.debug_highlight(f"\n\n***** CLIENT WEBSOCKET ROUTE CALLED FOR {client_id} ====\n\n")
-            await self.client_websocket(websocket, client_id)
-        
-        # Worker WebSocket route
-        @app.websocket("/ws/worker/{worker_id}")
-        async def worker_websocket_route(websocket: WebSocket, worker_id: str):
-            logger.debug_highlight(f"\n\n***** WORKER WEBSOCKET ROUTE CALLED FOR {worker_id} ====\n\n")
-            await self.worker_websocket(websocket, worker_id)
-        
-        # Monitor WebSocket route
-        @app.websocket("/ws/monitor/{monitor_id}")
-        async def monitor_websocket_route(websocket: WebSocket, monitor_id: str):
-            logger.debug_highlight(f"\n\n***** MONITOR WEBSOCKET ROUTE CALLED FOR {monitor_id} ====\n\n")
-            await self.monitor_websocket(websocket, monitor_id)
-        
-        # Add a test route that doesn't require a parameter
-        @app.websocket("/ws/test")
-        async def test_websocket_route(websocket: WebSocket):
-            logger.debug_highlight("\n\n*****  TEST WEBSOCKET ROUTE CALLED ====\n\n")
-            await websocket.accept()
-            await websocket.send_text(json.dumps({"type": "test", "message": "Test connection successful"}))
-            await websocket.close()
-        
-        print("\n\n***** ROUTES REGISTERED IN MESSAGE_HANDLER.PY ====\n\n")
-        logger.info("Initialized WebSocket routes")
-    
-    async def client_websocket(self, websocket: WebSocket, client_id: str) -> None:
-        """
-        Handle client WebSocket connections.
-        
-        Args:
-            websocket: WebSocket connection
-            client_id: Client identifier
-        """
-        print(f"\n\n==== CLIENT CONNECTION ATTEMPT: {client_id} ====\n\n")  # Direct print for immediate visibility
-        logger.info(f"CLIENT CONNECTION ATTEMPT: {client_id}")  # Standard logger
-        try:
-            logger.debug_highlight(f"About to accept connection for client: {client_id}")
-        except Exception as log_error:
-            print(f"\n\n==== ERROR WITH LOGGER: {str(log_error)} ====\n\n")
-        
-        # Flag to track if connection is closed
-        connection_closed = False
-            
-        # Accept the connection
-        try:
-            print(f"\n\n==== ACCEPTING CONNECTION: {client_id} ====\n\n")
-            await websocket.accept()
-            print(f"\n\n==== CONNECTION ACCEPTED: {client_id} ====\n\n")
-            
-            # Store the connection
-            print(f"\n\n==== STORING CONNECTION: {client_id} ====\n\n")
-            self.connection_manager.client_connections[client_id] = websocket
-            print(f"\n\n==== CONNECTION STORED: {client_id} ====\n\n")
-            
-            # Send an immediate welcome message
-            print(f"\n\n==== SENDING WELCOME: {client_id} ====\n\n")
-            welcome_message = ConnectionEstablishedMessage(
-                message=f"Welcome Client {client_id}! Connected to Redis Hub"
-            )
-            await websocket.send_text(welcome_message.model_dump_json())
-            print(f"\n\n==== WELCOME SENT: {client_id} ====\n\n")
-            
-            logger.info(f"Client connected: {client_id}")
-        except Exception as e:
-            print(f"\n\n==== ERROR ACCEPTING CLIENT CONNECTION {client_id}: {str(e)} ====\n\n")
-            logger.error(f"Error accepting client connection {client_id}: {str(e)}")
-            connection_closed = True
-            return
-        
-        try:
-            while True:
-                # Receive message from client
-                message_text = await websocket.receive_text()
-                
-                # Parse message
-                try:
-                    message_data = json.loads(message_text)
-                    message_type = message_data.get("type")
-                    
-                    # Process message based on type
-                    if message_type == "submit_job":
-                        await self.handle_submit_job(client_id, message_data)
-                    elif message_type == "get_job_status":
-                        job_id = message_data.get("job_id")
-                        if job_id:
-                            await self.handle_get_job_status(client_id, job_id)
-                        else:
-                            error_message = ErrorMessage(error="Missing job_id in get_job_status request")
-                            await self.connection_manager.send_to_client(client_id, error_message)
-                    elif message_type == "subscribe_job":
-                        job_id = message_data.get("job_id")
-                        if job_id:
-                            await self.connection_manager.subscribe_to_job(job_id, client_id)
-                            confirmation = SubscriptionConfirmedMessage(job_id=job_id)
-                            await websocket.send_text(confirmation.json())
-                        else:
-                            error_message = ErrorMessage(error="Missing job_id in subscribe_job request")
-                            await self.connection_manager.send_to_client(client_id, error_message)
-                    elif message_type == "subscribe_stats":
-                        self.handle_subscribe_stats(client_id)
-                        # Create a properly formatted SubscriptionConfirmedMessage
-                        # Note: SubscriptionConfirmedMessage requires job_id parameter, using 'stats' as a special identifier
-                        # for stats subscriptions, with channels=['stats'] to indicate the subscription type
-                        confirmation = SubscriptionConfirmedMessage(job_id="stats", channels=["stats"])
-                        await websocket.send_text(confirmation.json())
-                    elif message_type == "get_stats":
-                        await self.handle_get_stats(client_id)
-                    elif message_type == "stay_alive":
-                        # Respond with a simple acknowledgment
-                        # WebSocket protocol handles connection keepalive automatically
-                        response = {"type": "acknowledgment", "timestamp": time.time()}
-                        await websocket.send_text(json.dumps(response))
-                    else:
-                        # Handle unrecognized message type
-                        error_message = ErrorMessage(error=f"Unsupported message type: {message_type}")
-                        await self.connection_manager.send_to_client(client_id, error_message)
-                        
-                except json.JSONDecodeError:
-                    # Handle invalid JSON
-                    error_message = ErrorMessage(error="Invalid JSON format")
-                    await self.connection_manager.send_to_client(client_id, error_message)
-                    
-                except Exception as e:
-                    # Handle processing error
-                    error_message = ErrorMessage(error="Server error processing message")
-                    await self.connection_manager.send_to_client(client_id, error_message)
-                
-        except WebSocketDisconnect:
-            if not connection_closed:
-                self.connection_manager.disconnect_client(client_id)
-                logger.info(f"Client disconnected: {client_id}")
-                connection_closed = True
-        
-        except Exception as e:
-            # Handle unexpected error
-            if not connection_closed:
-                self.connection_manager.disconnect_client(client_id)
-                logger.error(f"Unexpected error in client connection {client_id}: {str(e)}")
-                connection_closed = True
-    
-    async def worker_websocket(self, websocket: WebSocket, worker_id: str) -> None:
-        """
-        Handle worker WebSocket connections.
-        
-        Args:
-            websocket: WebSocket connection
-            worker_id: Worker identifier
-        """
-        # Flag to track if connection is closed
-        connection_closed = False
-        
-        # Accept the connection
-        try:
-            # Accept the connection
-            await websocket.accept()
-            
-            # Store the connection
-            self.connection_manager.worker_connections[worker_id] = websocket
-            self.connection_manager.worker_status[worker_id] = "idle"  # Set initial status to idle
-            
-            # Send an immediate welcome message
-            welcome_message = {"type": "connection_established", "message": f"Welcome Worker {worker_id}! Connected to Redis Hub"}
-            logger.debug(f"[WORKER-CONN] Sending welcome message to worker {worker_id}")
-            await websocket.send_text(json.dumps(welcome_message))
-            
-            logger.info(f"Worker connected: {worker_id}")
-        except WebSocketDisconnect as e:
-            logger.error(f"WebSocket disconnected during worker connection setup for {worker_id}: {str(e)}")
-            connection_closed = True
-            return
-        except ConnectionClosedError as e:
-            logger.error(f"Connection closed during worker connection setup for {worker_id}: {str(e)}")
-            connection_closed = True
-            return
-        except Exception as e:
-            logger.error(f"Error accepting worker connection {worker_id}: {str(e)}")
-            connection_closed = True
-            return
-        
-        try:
-            while True:
-                # Receive message from worker
-                message_text = await websocket.receive_text()
-                
-                # Parse message
-                try:
-                    message_data = json.loads(message_text)
-                    logger.debug(f"Received message from worker {worker_id}: {message_data}")
-                    
-                    # Process message based on type
-                    await self.handle_worker_message(websocket, message_data, worker_id)
-                        
-                except json.JSONDecodeError:
-                    # Handle invalid JSON
-                    error_message = ErrorMessage(error="Invalid JSON format")
-                    await self.connection_manager.send_to_worker(worker_id, error_message)
-                    
-                except Exception as e:
-                    # Handle processing error
-                    error_message = ErrorMessage(error="Server error processing message")
-                    await self.connection_manager.send_to_worker(worker_id, error_message)
-                
-        except WebSocketDisconnect:
-            if not connection_closed:
-                self.connection_manager.disconnect_worker(worker_id)
-                # Mark worker as disconnected in Redis
-                self.redis_service.update_worker_status(worker_id, "disconnected")
-                logger.info(f"Worker disconnected: {worker_id}")
-                connection_closed = True
-        
-        except Exception as e:
-            # Handle unexpected error
-            if not connection_closed:
-                self.connection_manager.disconnect_worker(worker_id)
-                # Mark worker as disconnected in Redis
-                self.redis_service.update_worker_status(worker_id, "disconnected")
-                logger.error(f"Unexpected error in worker connection {worker_id}: {str(e)}")
-                connection_closed = True
-    
-    async def monitor_websocket(self, websocket: WebSocket, monitor_id: str) -> None:
-        """
-        Handle monitor WebSocket connections.
-        
-        Args:
-            websocket: WebSocket connection
-            monitor_id: Monitor identifier
-        """
-        # Flag to track if connection is closed
-        connection_closed = False
-        
-        # Accept the connection
-        try:
-            await websocket.accept()
-            
-            # Store the connection
-            self.connection_manager.monitor_connections[monitor_id] = websocket
-            
-            # Send an immediate welcome message
-            welcome_message = ConnectionEstablishedMessage(
-                message=f"Welcome Monitor {monitor_id}! Connected to Redis Hub"
-            )
-            await websocket.send_text(welcome_message.model_dump_json())
-            
-            # Send immediate system status update
-            await self.connection_manager.send_system_status_to_monitors(self.redis_service)
-            
-            logger.info(f"Monitor connected: {monitor_id}")
-        except Exception as e:
-            logger.error(f"Error accepting monitor connection {monitor_id}: {str(e)}")
-            connection_closed = True
-            return
-        
-        try:
-            while True:
-                # Receive message from monitor
-                message_text = await websocket.receive_text()
-                
-                # Parse message
-                try:
-                    message_data = json.loads(message_text)
-                    message_type = message_data.get("type")
-                    
-                    # Process message based on type
-                    if message_type == "subscribe":
-                        channels = message_data.get("channels", [])
-                        self.connection_manager.set_monitor_subscriptions(monitor_id, channels)
-                        await websocket.send_text(json.dumps({
-                            "type": "subscription_confirmed",
-                            "channels": channels
-                        }))
-                    elif message_type == "get_system_status":
-                        # Send immediate system status update using the enhanced method
-                        await self.connection_manager.send_system_status_to_monitors(self.redis_service)
-                    elif message_type == "stay_alive":
-                        # Respond to stay_alive to keep connection alive
-                        await websocket.send_text(json.dumps({
-                            "type": "stay_alive_response",
-                            "timestamp": time.time()
-                        }))
-                    else:
-                        # Handle unrecognized message type
-                        await websocket.send_text(json.dumps({
-                            "type": "error",
-                            "error": f"Unsupported message type: {message_type}"
-                        }))
-                        
-                except json.JSONDecodeError:
-                    # Handle invalid JSON
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "error": "Invalid JSON format"
-                    }))
-                    
-                except Exception as e:
-                    # Handle processing error
-                    await websocket.send_text(json.dumps({
-                        "type": "error",
-                        "error": "Server error processing message"
-                    }))
-                
-        except WebSocketDisconnect:
-            if not connection_closed:
-                self.connection_manager.disconnect_monitor(monitor_id)
-                logger.info(f"Monitor disconnected: {monitor_id}")
-                connection_closed = True
-        
-        except Exception as e:
-            # Handle unexpected error
-            if not connection_closed:
-                self.connection_manager.disconnect_monitor(monitor_id)
-                logger.error(f"Unexpected error in monitor connection {monitor_id}: {str(e)}")
-                connection_closed = True
+    # init_connections method removed as it's now handled by the ConnectionManager directly
     
     async def start_background_tasks(self) -> None:
         """
@@ -398,7 +74,7 @@ class MessageHandler(MessageHandlerInterface):
         self._background_tasks.append(asyncio.create_task(self._monitor_status_update_task()))
         self._background_tasks.append(asyncio.create_task(self._start_redis_listener()))
         
-        logger.info("Started all background tasks")
+        # logger.info("Started all background tasks")
     
     async def stop_background_tasks(self) -> None:
         """
@@ -419,62 +95,87 @@ class MessageHandler(MessageHandlerInterface):
         # Clear the task list
         self._background_tasks.clear()
         
-        logger.info("Stopped all background tasks")
+        # logger.info("Stopped all background tasks")
     
-    async def handle_client_message(self, websocket: WebSocket, 
-                                  message: Dict[str, Any], 
-                                  client_id: str) -> None:
+    async def handle_client_message(self, client_id: str, 
+                                  message_type: str,
+                                  message_data: Dict[str, Any], 
+                                  websocket: WebSocket) -> None:
         """
         Handle a message from a client.
         
         Args:
-            websocket: WebSocket connection
-            message: Message data
             client_id: Client identifier
+            message_type: Type of message
+            message_data: Message data
+            websocket: WebSocket connection
         """
-        # Extract message type
-        message_type = message.get("type")
-        
-        # Process message based on type
-        if message_type == "submit_job":
-            # Pass the dictionary directly to match the method signature
-            # This ensures type compatibility with the interface
-            await self.handle_submit_job(client_id, message)
-        elif message_type == "get_job_status":
-            job_id = message.get("job_id")
-            if job_id:
-                await self.handle_get_job_status(client_id, job_id)
-            else:
-                error_message = ErrorMessage(error="Missing job_id in get_job_status request")
-                await self.connection_manager.send_to_client(client_id, error_message)
-        elif message_type == "subscribe_job":
-            job_id = message.get("job_id")
-            if job_id:
-                await self.connection_manager.subscribe_to_job(job_id, client_id)
+        # Process message based on type using match-case
+        match message_type:
+            case "submit_job":
+                # Pass the dictionary directly to match the method signature
+                # This ensures type compatibility with the interface
+                await self.handle_submit_job(client_id, message_data)
+            case "request_job_status":
+                job_id = message_data.get("job_id")
+                if job_id:
+                    # Get job status from Redis
+                    job_data = self.redis_service.get_job_status(job_id)
+                    
+                    if not job_data:
+                        error_message = ErrorMessage(error=f"Job {job_id} not found")
+                        await self.connection_manager.send_to_client(client_id, error_message)
+                        return
+                    
+                    # Create response using the new ResponseJobStatusMessage class
+                    response = ResponseJobStatusMessage(
+                        job_id=job_id,
+                        status=job_data.get("status", "unknown"),
+                        progress=int(job_data.get("progress", 0)) if "progress" in job_data else None,
+                        worker_id=job_data.get("worker"),
+                        started_at=float(job_data["started_at"]) if "started_at" in job_data else None,
+                        completed_at=float(job_data["completed_at"]) if "completed_at" in job_data else None,
+                        result=job_data.get("result"),
+                        message=job_data.get("message")
+                    )
+                    await self.connection_manager.send_to_client(client_id, response)
+                    
+                    # Subscribe client to future updates for this job
+                    await self.connection_manager.subscribe_to_job(job_id, client_id)
+                else:
+                    error_message = ErrorMessage(error="Missing job_id in request_job_status request")
+                    await self.connection_manager.send_to_client(client_id, error_message)
+            case "subscribe_job":
+                job_id = message_data.get("job_id")
+                if job_id:
+                    await self.connection_manager.subscribe_to_job(job_id, client_id)
+                    # Use SubscriptionConfirmedMessage for consistency
+                    confirmation = SubscriptionConfirmedMessage(job_id=job_id)
+                    await websocket.send_text(confirmation.model_dump_json())
+                else:
+                    error_message = ErrorMessage(error="Missing job_id in subscribe_job request")
+                    await self.connection_manager.send_to_client(client_id, error_message)
+            case "subscribe_stats":
+                self.handle_subscribe_stats(client_id)
                 # Use SubscriptionConfirmedMessage for consistency
-                confirmation = SubscriptionConfirmedMessage(job_id=job_id)
-                await websocket.send_text(confirmation.json())
-            else:
-                error_message = ErrorMessage(error="Missing job_id in subscribe_job request")
+                # Note: SubscriptionConfirmedMessage requires job_id parameter, using 'stats' as a special identifier
+                # for stats subscriptions, with channels=['stats'] to indicate the subscription type
+                confirmation = SubscriptionConfirmedMessage(job_id="stats", channels=["stats"])
+                await websocket.send_text(confirmation.model_dump_json())
+            case "request_stats":
+                # Extract message_id if present
+                message_id = message_data.get('message_id', None)
+                # Pass the original message for context
+                await self.handle_request_stats(client_id, message_id, message_data)
+            case "stay_alive":
+                # Respond with a simple acknowledgment
+                # WebSocket protocol handles connection keepalive automatically
+                response = {"type": "acknowledgment", "timestamp": time.time()}
+                await websocket.send_text(json.dumps(response))
+            case _:
+                # Handle unrecognized message type
+                error_message = ErrorMessage(error=f"Unsupported message type: {message_type}")
                 await self.connection_manager.send_to_client(client_id, error_message)
-        elif message_type == "subscribe_stats":
-            self.handle_subscribe_stats(client_id)
-            # Use SubscriptionConfirmedMessage for consistency
-            # Note: SubscriptionConfirmedMessage requires job_id parameter, using 'stats' as a special identifier
-            # for stats subscriptions, with channels=['stats'] to indicate the subscription type
-            confirmation = SubscriptionConfirmedMessage(job_id="stats", channels=["stats"])
-            await websocket.send_text(confirmation.json())
-        elif message_type == "get_stats":
-            await self.handle_get_stats(client_id)
-        elif message_type == "stay_alive":
-            # Respond with a simple acknowledgment
-            # WebSocket protocol handles connection keepalive automatically
-            response = {"type": "acknowledgment", "timestamp": time.time()}
-            await websocket.send_text(json.dumps(response))
-        else:
-            # Handle unrecognized message type
-            error_message = ErrorMessage(error=f"Unsupported message type: {message_type}")
-            await self.connection_manager.send_to_client(client_id, error_message)
             
     async def handle_submit_job(self, client_id: str, message: Dict[str, Any]) -> None:
         """
@@ -506,59 +207,26 @@ class MessageHandler(MessageHandlerInterface):
             client_id=client_id
         )
         
-        # Create job available notification for workers
-        notification = JobAvailableMessage(
-            job_id=job_id,
-            job_type=job_type,
-            priority=priority,
-            job_request_payload=payload
-        )
-        
-        # Send notification to idle workers and get count
-        worker_count = await self.connection_manager.notify_idle_workers(notification)
-        
-        # Send confirmation response with worker count
+        # Send confirmation response
+        # Note: We're not directly notifying workers here anymore
+        # Worker notification will happen through broadcast_pending_jobs_to_idle_workers
         response = JobAcceptedMessage(
             job_id=job_id,
             position=job_data.get("position", -1),
-            notified_workers=worker_count  # Include the count of notified workers
+            notified_workers=0  # Default to 0 since we're not directly notifying workers
         )
         
         await self.connection_manager.send_to_client(client_id, response)
         # Automatically subscribe client to job updates
-        await self.connection_manager.subscribe_to_job(job_id, client_id)
+        await self.connection_manager.subscribe_to_job(client_id, job_id)
+        
+        # Broadcast pending jobs to idle workers
+        # This ensures that when a new job is submitted, we check for idle workers
+        # and broadcast the job to them using our improved broadcasting mechanism
+        await self.broadcast_pending_jobs_to_idle_workers()
     
-    async def handle_get_job_status(self, client_id: str, job_id: str) -> None:
-        """
-        Handle job status request from a client.
-        
-        Args:
-            client_id: Client identifier
-            job_id: Job identifier
-        """
-        # Get job status from Redis
-        job_data = self.redis_service.get_job_status(job_id)
-        
-        if not job_data:
-            error_message = ErrorMessage(error=f"Job {job_id} not found")
-            await self.connection_manager.send_to_client(client_id, error_message)
-            return
-        
-        # Create response
-        response = JobStatusMessage(
-            job_id=job_id,
-            status=job_data.get("status", "unknown"),
-            progress=int(job_data.get("progress", 0)) if "progress" in job_data else None,
-            worker_id=job_data.get("worker"),
-            started_at=float(job_data["started_at"]) if "started_at" in job_data else None,
-            completed_at=float(job_data["completed_at"]) if "completed_at" in job_data else None,
-            result=job_data.get("result"),
-            message=job_data.get("message")
-        )
-        await self.connection_manager.send_to_client(client_id, response)
-        
-        # Subscribe client to future updates for this job
-        await self.connection_manager.subscribe_to_job(job_id, client_id)
+    # The handle_get_job_status method has been removed and replaced with direct handling
+    # of request_job_status messages in the handle_message method
     
     def handle_subscribe_stats(self, client_id: str) -> None:
         """
@@ -569,123 +237,210 @@ class MessageHandler(MessageHandlerInterface):
         """
         self.connection_manager.subscribe_to_stats(client_id)
     
-    async def handle_get_stats(self, client_id: str) -> None:
+    def _serialize_stats(self, stats: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Handle stats request from a client.
+        Ensure all values in the stats dictionary are JSON serializable.
+        
+        Args:
+            stats: Raw stats dictionary from Redis service
+            
+        Returns:
+            Dict[str, Any]: Serialized stats dictionary with JSON-compatible values
+        """
+        # Use json module with a custom encoder to handle non-serializable types
+        class CustomEncoder(json.JSONEncoder):
+            def default(self, obj) -> str:
+                # Convert any non-serializable object to a string
+                return str(obj)
+        
+        try:
+            # Convert to JSON and back to handle serialization
+            # This automatically handles nested structures and non-serializable types
+            json_str = json.dumps(stats, cls=CustomEncoder)
+            # Explicitly type the return value to match the function's return type
+            serialized_stats: Dict[str, Any] = json.loads(json_str)
+            return serialized_stats
+        except Exception as e:
+            # In case of any serialization error, log it and return a simplified version
+            logger.error(f"Error serializing stats: {str(e)}")
+            # Explicitly type the return value to match the function's return type
+            error_response: Dict[str, Any] = {"error": f"Failed to serialize stats: {str(e)}", "partial_data": str(stats)[:1000]}
+            return error_response
+    
+    async def handle_request_stats(self, client_id: str, message_id: Optional[str] = None, original_message: Optional[Dict] = None) -> None:
+        """
+        Handle stats request from a monitor.
+        
+        This method is restricted to monitor clients only. Regular clients should use
+        handle_get_job_status for job-specific information.
         
         Args:
             client_id: Client identifier
+            message_id: Optional message ID for acknowledgment
+            original_message: Optional original message for context
         """
-        stats = self.redis_service.get_stats()
-        
-        # Create a proper StatsResponseMessage object
-        # Note: StatsResponseMessage only accepts 'stats' parameter, timestamp is not a valid parameter
-        stats_response = StatsResponseMessage(
-            stats=stats
-        )
-        
-        await self.connection_manager.send_to_client(client_id, stats_response)
+        try:
+            # Check if client is a monitor
+            if client_id not in self.connection_manager.monitor_connections:
+                # Send error message if not a monitor
+                error_message = ErrorMessage(error="Stats requests are restricted to monitors only")
+                await self.connection_manager.send_to_client(client_id, error_message)
+                return
+                
+            # Get the stats from Redis service
+            stats = self.redis_service.request_stats()
+            
+            # Serialize the stats to ensure JSON compatibility
+            serializable_stats = self._serialize_stats(stats)
+            
+            # Create a proper StatsResponseMessage object with serializable stats
+            stats_response = self.message_models.create_response_stats_message(serializable_stats)      
+            # Send the response to the client
+            await self.connection_manager.send_to_client(client_id, stats_response)
+            
+            # Send acknowledgment if message_id is provided
+            if message_id and original_message:
+                ack_message = AckMessage(
+                    original_id=message_id,
+                    original_type=original_message.get('type', 'request_stats')
+                )
+                await self.connection_manager.send_to_client(client_id, ack_message)
+                
+            # logger.info(f"Sent stats response to client {client_id}")
+            
+        except Exception as e:
+            # logger.error(f"Error handling request_stats: {str(e)}")
+            # Send error message to client
+            error_message = ErrorMessage(
+                error=f"Failed to process request_stats: {str(e)}",
+                details={"exception": str(e)}
+            )
+            await self.connection_manager.send_to_client(client_id, error_message)
     
-    async def handle_worker_message(self, websocket: WebSocket, 
-                                  message: Dict[str, Any], 
-                                  worker_id: str) -> None:
+    async def handle_worker_message(self, worker_id: str,
+                                  message_type: str,
+                                  message_data: Dict[str, Any], 
+                                  websocket: WebSocket) -> None:
         """
         Handle a message from a worker.
         
         Args:
-            websocket: WebSocket connection
-            message: Message data
             worker_id: Worker identifier
+            message_type: Type of message
+            message_data: Message data
+            websocket: WebSocket connection
         """
         # Parse message using the models
-        message_obj = self.message_models.parse_message(message)
+        message_obj = self.message_models.parse_message(message_data)
+
+        logger.debug(f"[HANDLING-WORKER-MESSAGE] From worker {worker_id}: {message_obj}")
         
         if not message_obj:
-            logger.error(f"Invalid message received from worker {worker_id}")
+            # logger.error(f"Invalid message received from worker {worker_id}")
             error_message = ErrorMessage(error="Invalid message format")
             await self.connection_manager.send_to_worker(worker_id, error_message)
             return
             
-        # Process message based on type
-        if message_obj.type == MessageType.REGISTER_WORKER:
-            # Cast message to the expected type for type checking
-            # Note: We use .dict() here only for creating a new typed object, not for sending
-            # This ensures proper type validation while maintaining the original data
-            register_message = RegisterWorkerMessage(**message_obj.dict())
-            await self.handle_register_worker(worker_id, register_message)
-        elif message_obj.type == MessageType.UPDATE_JOB_PROGRESS:
-            # Cast message to the expected type for type checking
-            # Create a properly typed message object
-            # Note: We use .dict() here only for creating a new typed object, not for sending
-            # This ensures proper type validation while maintaining the original data
-            progress_message = UpdateJobProgressMessage(**message_obj.dict())
-            await self.handle_update_job_progress(worker_id, progress_message)
-        elif message_obj.type == MessageType.COMPLETE_JOB:
-            # Cast message to the expected type for type checking
-            # Create a properly typed message object
-            # Note: We use .dict() here only for creating a new typed object, not for sending
-            # This ensures proper type validation while maintaining the original data
-            complete_message = CompleteJobMessage(**message_obj.dict())
-            await self.handle_complete_job(worker_id, complete_message)
-        elif message_obj.type == MessageType.WORKER_HEARTBEAT:
-            # Validate that the message has the required fields for WorkerHeartbeatMessage
-            if not isinstance(message_obj, WorkerHeartbeatMessage):
-                # Create a properly typed message object with validation
-                try:
-                    heartbeat_message = WorkerHeartbeatMessage(**message_obj.model_dump())
-                    await self.handle_worker_heartbeat(worker_id, heartbeat_message)
-                except Exception as e:
-                    error_message = ErrorMessage(error=f"Invalid WorkerHeartbeatMessage: {str(e)}")
-                    await self.connection_manager.send_to_worker(worker_id, error_message)
-            else:
-                await self.handle_worker_heartbeat(worker_id, message_obj)
-        elif message_obj.type == MessageType.WORKER_STATUS:
-            # Validate that the message has the required fields for WorkerStatusMessage
-            if not isinstance(message_obj, WorkerStatusMessage):
-                # Create a properly typed message object with validation
-                try:
-                    status_message = WorkerStatusMessage(**message_obj.model_dump())
-                    await self.handle_worker_status(worker_id, status_message)
-                except Exception as e:
-                    error_message = ErrorMessage(error=f"Invalid WorkerStatusMessage: {str(e)}")
-                    await self.connection_manager.send_to_worker(worker_id, error_message)
-            else:
-                await self.handle_worker_status(worker_id, message_obj)
-        elif message_obj.type == MessageType.CLAIM_JOB:
-            # Validate that the message has the required fields for ClaimJobMessage
-            if not isinstance(message_obj, ClaimJobMessage):
-                # Create a properly typed message object with validation
-                try:
-                    claim_message = ClaimJobMessage(**message_obj.model_dump())
-                    await self.handle_claim_job(worker_id, claim_message)
-                except Exception as e:
-                    error_message = ErrorMessage(error=f"Invalid ClaimJobMessage: {str(e)}")
-                    await self.connection_manager.send_to_worker(worker_id, error_message)
-            else:
-                await self.handle_claim_job(worker_id, message_obj)
-        else:
-            # Handle unrecognized message type
-            error_message = ErrorMessage(error=f"Unsupported message type: {message_obj.type}")
-            await self.connection_manager.send_to_worker(worker_id, error_message)
+        # Process message based on type using match-case
+        match message_type:
+            case "register_worker":
+                # Cast message to the expected type for type checking
+                # Note: We use .dict() here only for creating a new typed object, not for sending
+                # This ensures proper type validation while maintaining the original data
+                register_message = RegisterWorkerMessage(**message_obj.dict())
+                await self.handle_register_worker(worker_id, register_message)
+            case "update_job_progress":
+                # Cast message to the expected type for type checking
+                # Create a properly typed message object
+                # Note: We use .dict() here only for creating a new typed object, not for sending
+                # This ensures proper type validation while maintaining the original data
+                progress_message = UpdateJobProgressMessage(**message_obj.dict())
+                await self.handle_update_job_progress(worker_id, progress_message)
+            case "complete_job":
+                # Cast message to the expected type for type checking
+                # Create a properly typed message object
+                # Note: We use .dict() here only for creating a new typed object, not for sending
+                # This ensures proper type validation while maintaining the original data
+                complete_message = CompleteJobMessage(**message_obj.dict())
+                await self.handle_complete_job(worker_id, complete_message)
+            case "worker_heartbeat":
+                # Validate that the message has the required fields for WorkerHeartbeatMessage
+                if not isinstance(message_obj, WorkerHeartbeatMessage):
+                    # Create a properly typed message object with validation
+                    try:
+                        heartbeat_message = WorkerHeartbeatMessage(**message_obj.model_dump())
+                        await self.handle_worker_heartbeat(worker_id, heartbeat_message)
+                    except Exception as e:
+                        error_message = ErrorMessage(error=f"Invalid WorkerHeartbeatMessage: {str(e)}")
+                        await self.connection_manager.send_to_worker(worker_id, error_message)
+                else:
+                    await self.handle_worker_heartbeat(worker_id, message_obj)
+            case "worker_status":
+                # Validate that the message has the required fields for WorkerStatusMessage
+                if not isinstance(message_obj, WorkerStatusMessage):
+                    # Create a properly typed message object with validation
+                    try:
+                        status_message = WorkerStatusMessage(**message_obj.model_dump())
+                        await self.handle_worker_status(worker_id, status_message)
+                    except Exception as e:
+                        error_message = ErrorMessage(error=f"Invalid WorkerStatusMessage: {str(e)}")
+                        await self.connection_manager.send_to_worker(worker_id, error_message)
+                else:
+                    await self.handle_worker_status(worker_id, message_obj)
+            case "claim_job":
+                # Validate that the message has the required fields for ClaimJobMessage
+                if not isinstance(message_obj, ClaimJobMessage):
+                    # Create a properly typed message object with validation
+                    try:
+                        claim_message = ClaimJobMessage(**message_obj.model_dump())
+                        await self.handle_claim_job(worker_id, claim_message)
+                    except Exception as e:
+                        error_message = ErrorMessage(error=f"Invalid ClaimJobMessage: {str(e)}")
+                        await self.connection_manager.send_to_worker(worker_id, error_message)
+                else:
+                    await self.handle_claim_job(worker_id, message_obj)
+            # The subscribe_job_notifications case has been removed
+            # This functionality is now handled by the register_worker message
+            case _:
+                # Handle unrecognized message type
+                error_message = ErrorMessage(error=f"Unsupported message type: {message_type}")
+                await self.connection_manager.send_to_worker(worker_id, error_message)
             
-    async def handle_register_worker(self, worker_id: str, message: BaseMessage) -> None:
+    async def handle_register_worker(self, worker_id: str, message: RegisterWorkerMessage) -> None:
         """
-        Handle worker registration.
+        Handle worker registration - registers the worker, sets its status, and subscribes to job notifications if requested.
         
         Args:
             worker_id: Worker identifier
-            message: Register worker message
+            message: Worker registration message
         """
-        # Update worker info in Redis
-        # Create a capabilities dict from machine_id and gpu_id
-        capabilities: Dict[str, Any] = {}
+        # Extract capabilities from the message
+        capabilities = message.capabilities or {}
         
-        self.redis_service.register_worker(
-            worker_id=worker_id,
-            capabilities=capabilities
-        )
+        # Register worker in Redis with capabilities
+        self.redis_service.register_worker(worker_id, capabilities)
+        logger.info(f"Worker registered: {worker_id}")
         
-        # Send confirmation
+        # Set initial status (default is idle)
+        status = message.status if message.status is not None else "idle"
+        self.redis_service.update_worker_status(worker_id, status)
+        
+        # Initialize heartbeat timestamp in connection manager
+        current_time = time.time()
+        self.connection_manager.worker_last_heartbeat[worker_id] = current_time
+        logger.debug(f"Initialized heartbeat timestamp for worker {worker_id} at {current_time:.0f}")
+        
+        # Subscribe to job notifications if requested
+        if message.subscribe_to_jobs:
+            # Add worker to job notification subscribers
+            self.connection_manager.subscribe_worker_to_job_notifications(worker_id)
+            
+            # Send confirmation message
+            confirmation = JobNotificationsSubscribedMessage(worker_id=worker_id)
+            await self.connection_manager.send_to_worker(worker_id, confirmation)
+            logger.info(f"Worker {worker_id} subscribed to job notifications")
+        
+        # Send registration confirmation
         response = WorkerRegisteredMessage(worker_id=worker_id)
         await self.connection_manager.send_to_worker(worker_id, response)
         
@@ -709,7 +464,7 @@ class MessageHandler(MessageHandlerInterface):
         # This ensures type consistency and simplifies the message flow
         await self.connection_manager.forward_job_progress(message)
         
-        logger.info(f"Job progress updated: {message.job_id}, progress: {message.progress}%")
+        # logger.info(f"Job progress updated: {message.job_id}, progress: {message.progress}%")
     
     async def handle_complete_job(self, worker_id: str, message: CompleteJobMessage) -> None:
         """
@@ -725,8 +480,20 @@ class MessageHandler(MessageHandlerInterface):
             result=message.result
         )
         
-        # Mark worker as idle
+        # Update worker status to idle in memory
+        self.connection_manager.worker_status[worker_id] = "idle"
+        
+        # Mark worker as idle in Redis
         self.redis_service.update_worker_status(worker_id, "idle")
+        
+        # Send acknowledgment back to the worker
+        # This prevents the worker from receiving its own message back
+        # and ensures it knows the server has processed the completion
+        ack_message = self.message_models.create_job_completed_ack_message(
+            job_id=message.job_id,
+            worker_id=worker_id
+        )
+        await self.connection_manager.send_to_worker(worker_id, ack_message)
         
         # Forward completion update to subscribed clients
         # Pass the message object directly without .dict() conversion
@@ -734,6 +501,9 @@ class MessageHandler(MessageHandlerInterface):
         await self.connection_manager.broadcast_job_notification(message)
         
         logger.info(f"Job completed: {message.job_id} by worker: {worker_id}")
+        
+        # Broadcast pending jobs to idle workers
+        await self.broadcast_pending_jobs_to_idle_workers()
     
     async def handle_worker_heartbeat(self, worker_id: str, message: WorkerHeartbeatMessage) -> None:
         """
@@ -746,12 +516,24 @@ class MessageHandler(MessageHandlerInterface):
         # Update worker last seen timestamp in Redis
         self.redis_service.update_worker_heartbeat(worker_id)
         
+        # Update heartbeat timestamp in connection manager
+        current_time = time.time()
+        self.connection_manager.worker_last_heartbeat[worker_id] = current_time
+        
         # Optionally update worker status if provided
         if message.status:
+            # Update worker status in memory
+            self.connection_manager.worker_status[worker_id] = message.status
+            
+            # Update worker status in Redis
             self.redis_service.update_worker_status(worker_id, message.status)
+            
+            # If worker is idle, broadcast pending jobs
+            if message.status == "idle":
+                await self.broadcast_pending_jobs_to_idle_workers()
         
-        # No response needed for heartbeats
-        logger.debug(f"Worker heartbeat received: {worker_id}")
+        # Log heartbeat with timestamp (debug level)
+        logger.debug(f"Worker heartbeat received: {worker_id} at {current_time:.0f}")
     
     async def handle_worker_status(self, worker_id: str, message: WorkerStatusMessage) -> None:
         """
@@ -764,16 +546,19 @@ class MessageHandler(MessageHandlerInterface):
         # Update worker status in Redis
         # Use 'idle' as default status if message.status is None
         status = message.status if message.status is not None else "idle"
+        
+        # Update worker status in memory
+        self.connection_manager.worker_status[worker_id] = status
+        
+        # Update worker status in Redis
         self.redis_service.update_worker_status(worker_id, status)
         
-        # If worker is now idle, notify about available jobs
+        # If worker is now idle, broadcast pending jobs
         if status == "idle":
-            # TODO: Replace with appropriate method to notify worker about available jobs
-            # await self.connection_manager.notify_worker_about_jobs(worker_id)
-            # For now, we'll just log this event
             logger.info(f"Worker {worker_id} is now idle and ready for jobs")
+            await self.broadcast_pending_jobs_to_idle_workers()
         
-        logger.info(f"Worker status updated: {worker_id}, status: {message.status}")
+        # logger.info(f"Worker status updated: {worker_id}, status: {message.status}")
     
     async def handle_claim_job(self, worker_id: str, message: ClaimJobMessage) -> None:
         """
@@ -783,11 +568,29 @@ class MessageHandler(MessageHandlerInterface):
             worker_id: Worker identifier
             message: Claim job message
         """
+        # Check if worker is idle before allowing claim
+        worker_info = self.redis_service.get_worker_info(worker_id)
+        logger.debug(f"Worker {worker_id} info in Redis before claim: {worker_info}")
+        
+        # Also check in-memory status
+        in_memory_status = self.connection_manager.worker_status.get(worker_id)
+        logger.debug(f"Worker {worker_id} in-memory status before claim: {in_memory_status}")
+        
+        if not worker_info or worker_info.get("status") != "idle":
+            # Worker is not idle, send error message
+            error_message = ErrorMessage(error=f"Cannot claim job {message.job_id}: Worker {worker_id} is not idle")
+            await self.connection_manager.send_to_worker(worker_id, error_message)
+            logger.warning(f"Rejected job claim: {message.job_id} by non-idle worker: {worker_id}")
+            return
+            
         # Attempt to claim the job in Redis
         success = self.redis_service.claim_job(message.job_id, worker_id)
         
         if success:
-            # Update worker status to working
+            # Update worker status to working in memory
+            self.connection_manager.worker_status[worker_id] = "working"
+            
+            # Update worker status to working in Redis
             self.redis_service.update_worker_status(worker_id, "working")
             
             # Get job details
@@ -805,16 +608,19 @@ class MessageHandler(MessageHandlerInterface):
                 await self.connection_manager.send_to_worker(worker_id, job_details)
                 
                 # Notify clients that job is now processing
-                status_update = JobStatusMessage(
+                status_update = ResponseJobStatusMessage(
                     job_id=message.job_id,
                     status="processing",
                     worker_id=worker_id
                 )
-                # Pass the JobStatusMessage object directly without .dict() conversion
+                # Pass the ResponseJobStatusMessage object directly without .dict() conversion
                 # This ensures type consistency across the application
                 await self.connection_manager.broadcast_job_notification(status_update)
                 
-                logger.info(f"Job claimed: {message.job_id} by worker: {worker_id}")
+                # After job is claimed, broadcast pending jobs to other idle workers
+                await self.broadcast_pending_jobs_to_idle_workers()
+                
+                # logger.info(f"Job claimed: {message.job_id} by worker: {worker_id}")
             else:
                 logger.error(f"Job claimed but details not found: {message.job_id}")
         else:
@@ -824,67 +630,69 @@ class MessageHandler(MessageHandlerInterface):
             
             logger.warning(f"Failed job claim: {message.job_id} by worker: {worker_id}")
     
-    async def handle_monitor_message(self, websocket: WebSocket, 
-                                   message: Dict[str, Any], 
-                                   monitor_id: str) -> None:
+    async def handle_monitor_message(self, monitor_id: str,
+                                   message_type: str,
+                                   message_data: Dict[str, Any], 
+                                   websocket: WebSocket) -> None:
         """
         Handle a message from a monitor.
         
         Args:
-            websocket: WebSocket connection
-            message: Message data
             monitor_id: Monitor identifier
+            message_type: Type of message
+            message_data: Message data
+            websocket: WebSocket connection
         """
-        # Extract message type
-        message_type = message.get("type")
-        
-        # Process message based on type
-        if message_type == "subscribe":
-            channels = message.get("channels", [])
-            self.connection_manager.set_monitor_subscriptions(monitor_id, channels)
-            await websocket.send_text(json.dumps({
-                "type": "subscription_confirmed",
-                "channels": channels
-            }))
-        elif message_type == "get_system_status":
-            # Send immediate system status update using the enhanced method
-            await self.connection_manager.send_system_status_to_monitors(self.redis_service)
-        elif message_type == "stay_alive":
-            # Respond to stay_alive to keep connection alive
-            await websocket.send_text(json.dumps({
-                "type": "stay_alive_response",
-                "timestamp": time.time()
-            }))
-        else:
-            # Handle unrecognized message type
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "error": f"Unsupported message type: {message_type}"
-            }))
+        # Process message based on type using match-case
+        match message_type:
+            case "subscribe":
+                channels = message_data.get("channels", [])
+                self.connection_manager.set_monitor_subscriptions(monitor_id, channels)
+                await websocket.send_text(json.dumps({
+                    "type": "subscription_confirmed",
+                    "channels": channels
+                }))
+            case "get_system_status":
+                # Send immediate system status update using the enhanced method
+                await self.connection_manager.send_system_status_to_monitors(self.redis_service)
+            case "stay_alive":
+                # Respond to stay_alive to keep connection alive
+                await websocket.send_text(json.dumps({
+                    "type": "stay_alive_response",
+                    "timestamp": time.time()
+                }))
+            case _:
+                # Handle unrecognized message type
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "error": f"Unsupported message type: {message_type}"
+                }))
    
     # Background task methods
     async def _broadcast_stats_task(self) -> None:
         """
-        Periodically fetch stats from Redis and broadcast to subscribed clients
+        Periodically fetch stats from Redis and broadcast to monitors
+        
+        This task fetches detailed system statistics including information about
+        active jobs and workers, and broadcasts them to all connected monitors.
+        Regular clients do not receive these broadcasts as they only need
+        information about their specific jobs.
         """
         last_stats = None  # Track previous stats to detect changes
         
         while True:
             try:
-                # Check if there are any clients subscribed or monitors connected
-                # Ensure we're checking a sized collection, not an int
-                stats_subscriptions = self.connection_manager.stats_subscriptions
+                # Check if there are any monitors connected
                 monitor_connections = self.connection_manager.monitor_connections
-                subscribers_count = len(stats_subscriptions) if hasattr(stats_subscriptions, '__len__') else 0
                 monitors_count = len(monitor_connections) if hasattr(monitor_connections, '__len__') else 0
                 
-                # Skip if no clients are subscribed AND no monitors are connected
-                if subscribers_count == 0 and monitors_count == 0:
-                    await asyncio.sleep(3)  # Check less frequently if no subscribers
+                # Skip if no monitors are connected
+                if monitors_count == 0:
+                    await asyncio.sleep(3)  # Check less frequently if no monitors
                     continue
                     
-                # Get stats from Redis
-                current_stats = self.redis_service.get_stats()
+                # Get detailed stats from Redis
+                current_stats = self.redis_service.request_stats()
                 
                 # Skip broadcast if stats haven't changed
                 if current_stats == last_stats:
@@ -894,22 +702,142 @@ class MessageHandler(MessageHandlerInterface):
                 # Update last_stats for next comparison
                 last_stats = current_stats
                 
-                # Create a proper StatsResponseMessage using the factory method
-                # This replaces the previous dictionary approach with a typed message class
-                stats_response = self.message_models.create_stats_response_message(current_stats)
+                # Serialize the stats to ensure JSON compatibility
+                serializable_stats = self._serialize_stats(current_stats)
                 
-                # Broadcast to all subscribed clients
-                await self.connection_manager.broadcast_stats(stats_response)
+                # Create a proper StatsBroadcastMessage using the factory method
+                # Build the connections dictionary
+                connections = {
+                    "clients": list(self.connection_manager.client_connections.keys()),
+                    "workers": list(self.connection_manager.worker_connections.keys()),
+                    "monitors": list(self.connection_manager.monitor_connections.keys())
+                }
                 
-                # Also send to all connected monitors
-                for monitor_id in self.connection_manager.monitor_connections:
-                    await self.connection_manager.send_to_monitor(monitor_id, stats_response)
+                # Build the subscriptions dictionary
+                subscriptions = {
+                    "stats": list(self.connection_manager.stats_subscriptions),
+                    "job_notifications": list(self.connection_manager.job_notification_subscriptions),
+                    "jobs": self.connection_manager.job_subscriptions
+                }
+                
+                # Build the workers dictionary
+                workers = {}
+                for worker_id, status in self.connection_manager.worker_status.items():
+                    # Check if the worker is subscribed to job notifications
+                    is_accepting_jobs = worker_id in self.connection_manager.job_notification_subscriptions
+                    workers[worker_id] = {
+                        "status": status, 
+                        "connection_status": status,
+                        "is_accepting_jobs": is_accepting_jobs  # Add field to show if worker is accepting jobs
+                    }
+                
+                # Create the stats broadcast message
+                stats_broadcast = self.message_models.create_stats_broadcast_message(
+                    connections=connections,
+                    workers=workers,
+                    subscriptions=subscriptions,
+                    system=serializable_stats
+                )
+                
+                # Broadcast to monitors only - the broadcast_stats method now only sends to monitors
+                await self.connection_manager.broadcast_to_monitors(stats_broadcast)
                 
             except Exception as e:
                 logger.error(f"Error in stats broadcast task: {str(e)}")
                 
             # Sleep before next update
             await asyncio.sleep(1)
+    
+    async def broadcast_pending_jobs_to_idle_workers(self) -> bool:
+        """
+        Broadcast pending jobs to idle workers based on in-memory worker status.
+        
+        This method:
+        1. Checks for idle workers in the connection manager's in-memory state
+        2. Gets the next highest priority pending job from Redis
+        3. Broadcasts job notifications to idle workers
+        
+        Returns:
+            bool: True if a job was broadcast, False otherwise
+        """
+        try:
+            # Log the current worker status dictionary
+            logger.info(f"[DEBUG] Current worker status: {self.connection_manager.worker_status}")
+            
+            # Get idle workers from in-memory state
+            idle_workers = []
+            for worker_id, status in self.connection_manager.worker_status.items():
+                if status == "idle":
+                    idle_workers.append(worker_id)
+                logger.info(f"[DEBUG] Worker {worker_id} status: {status}")
+            
+            if not idle_workers:
+                logger.info("[DEBUG] No idle workers available for job assignment")
+                return False
+            else:
+                logger.info(f"[DEBUG] Found {len(idle_workers)} idle workers: {idle_workers}")
+                
+            # Get the next pending job from Redis
+            logger.info("[DEBUG] Attempting to get next pending job from Redis")
+            next_job = self.redis_service.get_next_pending_job()
+            
+            if not next_job:
+                logger.info("[DEBUG] No pending jobs available for assignment")
+                return False
+            else:
+                logger.info(f"[DEBUG] Found pending job: {next_job}")
+                
+            job_id = next_job.get("id")
+            # Ensure job_id is a string to satisfy type requirements
+            if job_id is None or not isinstance(job_id, str):
+                # Generate a default job_id if none exists or it's not a string
+                job_id = str(uuid.uuid4())
+                logger.warning(f"[DEBUG] Missing or invalid job_id in next_job, generated default: {job_id}")
+                
+            job_type = next_job.get("job_type", "unknown")
+            priority = int(next_job.get("priority", 0))
+            job_request_payload = next_job.get("job_request_payload", {})
+            
+            logger.info(f"[DEBUG] Job details - ID: {job_id}, Type: {job_type}, Priority: {priority}")
+            logger.info(f"[DEBUG] Job payload type: {type(job_request_payload)}")
+            
+            # Parse job_request_payload if it's a string (JSON)
+            if isinstance(job_request_payload, str):
+                try:
+                    import json
+                    job_request_payload = json.loads(job_request_payload)
+                    logger.info(f"[DEBUG] Successfully parsed job_request_payload from string to dict: {job_request_payload}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"[DEBUG] Error parsing job_request_payload as JSON: {str(e)}")
+                    job_request_payload = {}  # Use empty dict as fallback
+            
+            # Create job available notification using the proper message class
+            # This ensures proper validation and type handling
+            try:
+                notification = JobAvailableMessage(
+                    job_id=job_id,
+                    job_type=job_type,
+                    priority=priority,
+                    job_request_payload=job_request_payload
+                )
+                logger.info(f"[DEBUG] Created JobAvailableMessage successfully")
+            except Exception as msg_error:
+                logger.error(f"[DEBUG] Error creating JobAvailableMessage: {str(msg_error)}")
+                return False
+            
+            # Send notification to idle workers
+            logger.info(f"[DEBUG] Broadcasting job {job_id} to {len(idle_workers)} idle workers")
+            try:
+                result = await self.connection_manager.notify_idle_workers(notification)
+                logger.info(f"[DEBUG] notify_idle_workers result: {result}")
+                return True
+            except Exception as notify_error:
+                logger.error(f"[DEBUG] Error in notify_idle_workers: {str(notify_error)}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"[DEBUG] Error broadcasting pending jobs: {str(e)}")
+            return False
     
     async def _cleanup_stale_claims_task(self) -> None:
         """
@@ -922,7 +850,7 @@ class MessageHandler(MessageHandlerInterface):
                 
                 # Ensure cleaned_jobs is a dict before using len() and items()
                 if cleaned_jobs and isinstance(cleaned_jobs, dict) and len(cleaned_jobs) > 0:
-                    logger.info(f"Cleaned up {len(cleaned_jobs)} stale job claims")
+                    # logger.info(f"Cleaned up {len(cleaned_jobs)} stale job claims")
                     
                     # For each cleaned job, notify idle workers about it
                     for job_id, job_data in cleaned_jobs.items():
@@ -937,6 +865,9 @@ class MessageHandler(MessageHandlerInterface):
                         
                         # Send notification to idle workers
                         await self.connection_manager.notify_idle_workers(notification)
+                    
+                    # After cleaning up stale claims, broadcast any pending jobs
+                    await self.broadcast_pending_jobs_to_idle_workers()
                         
             except Exception as e:
                 logger.error(f"Error in stale claims cleanup task: {str(e)}")
@@ -951,21 +882,16 @@ class MessageHandler(MessageHandlerInterface):
         while True:
             try:
                 # Get stale workers and mark them as disconnected
-                # Check if the method exists, otherwise use a fallback approach
-                if hasattr(self.redis_service, 'mark_stale_workers'):
-                    stale_workers = self.redis_service.mark_stale_workers()
-                else:
-                    # Fallback: Get stale workers and update their status individually
-                    stale_workers = self.redis_service.get_stale_workers() if hasattr(self.redis_service, 'get_stale_workers') else []
-                    for worker_id in stale_workers:
-                        self.redis_service.update_worker_status(worker_id, "disconnected")
+                # Use the mark_stale_workers method which handles both identifying stale workers
+                # and updating their status in a single operation
+                stale_workers = self.redis_service.mark_stale_workers()
                 
                 if stale_workers and len(stale_workers) > 0:
-                    logger.info(f"Marked {len(stale_workers)} workers as disconnected due to inactivity")
+                    # logger.info(f"Marked {len(stale_workers)} workers as disconnected due to inactivity")
                     
                     # Update connection manager with disconnected workers
                     for worker_id in stale_workers:
-                        self.connection_manager.disconnect_worker(worker_id)
+                        await self.connection_manager.disconnect_worker(worker_id)
                         
             except Exception as e:
                 logger.error(f"Error in stale workers cleanup task: {str(e)}")
@@ -1000,12 +926,12 @@ class MessageHandler(MessageHandlerInterface):
         """
         Start listening for Redis pub/sub messages
         """
-        logger.info("Starting Redis pub/sub listener")
+        # logger.info("Starting Redis pub/sub listener")
         
         # Connect to Redis async client
         try:
             await self.redis_service.connect_async()
-            logger.info("Successfully connected to Redis async client")
+            # logger.info("Successfully connected to Redis async client")
         except Exception as e:
             logger.error(f"Failed to connect to Redis async client: {str(e)}")
             return
@@ -1045,7 +971,7 @@ class MessageHandler(MessageHandlerInterface):
                         
                         # Send notification to idle workers
                         worker_count = await self.connection_manager.notify_idle_workers(notification)
-                        logger.info(f"Notified {worker_count} idle workers about job {job_id}")
+                        # logger.info(f"Notified {worker_count} idle workers about job {job_id}")
                 
             except Exception as e:
                 logger.error(f"Error handling Redis job notification message: {str(e)}")
@@ -1066,3 +992,7 @@ class MessageHandler(MessageHandlerInterface):
             job_id: Job identifier
         """
         await self.connection_manager.subscribe_to_job(job_id, client_id)
+    
+    # The handle_subscribe_job_notifications method has been removed
+    # Its functionality is now part of handle_register_worker
+    # This ensures a cleaner, more consolidated registration process

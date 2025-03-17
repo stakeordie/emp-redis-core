@@ -13,9 +13,9 @@
  * ----------------------------------------
  * We are considering a more descriptive naming convention for message types
  * that clearly indicates the sender, action, subject, and receiver of each message.
- * 
+ *
  * Proposed format: <SENDER>_<VERB>_<SUBJECT>_<STATUS/DETAIL>_TO_<RECEIVER>
- * 
+ *
  * Where:
  * - <SENDER>: Who is sending the message (CLIENT, WORKER, SERVER, MONITOR)
  * - <VERB>: The action being performed in present tense (SUBMIT, CONFIRM, ANNOUNCE)
@@ -33,56 +33,48 @@
  *
  * This naming convention provides clear indication of message flow and purpose,
  * making the codebase more maintainable and easier to understand.
- * 
+ *
  * NOTE: This is a proposal only. No changes have been made to the actual message types yet.
  * Implementation would require coordinated updates across Python and TypeScript code.
  */
 export enum MessageType {
   // SETUP_MESSAGES
-  REGISTER_WORKER = "register_worker",             // Worker → Server: Registers itself with the server to receive jobs
-  WORKER_REGISTERED = "worker_registered",         // Server → Worker: Confirms successful worker registration
+  REGISTER_WORKER = "register_worker", // Worker → Server: Registers itself with the server to receive jobs
+  WORKER_REGISTERED = "worker_registered", // Server → Worker: Confirms successful worker registration
   CONNECTION_ESTABLISHED = "connection_established", // Server → Client/Worker: Confirms that a WebSocket connection has been established
 
   // JOB WORKFLOW_MESSAGES
-  SUBMIT_JOB = "submit_job",                      // Client → Server: Submits a new job to the server for processing
-  JOB_ACCEPTED = "job_accepted",                  // Server → Client: Confirms that a job has been accepted for processing
-  JOB_AVAILABLE = "job_available",                // Server → Workers: Announces that a job is available for processing
-  CLAIM_JOB = "claim_job",                       // Worker → Server: Claims a job for processing
-  JOB_ASSIGNED = "job_assigned",                 // Server → Worker: Assigns a job to a worker
-  UPDATE_JOB_PROGRESS = "update_job_progress",    // Worker → Server -> Client: Updates the progress of a job it's processing
-  COMPLETE_JOB = "complete_job",                  // Worker → Server -> Client: Notifies that a job has been completed successfully
-  FAIL_JOB = "fail_job",                          // Worker → Server: Notifies that a job has failed
+  SUBMIT_JOB = "submit_job", // Client → Server: Submits a new job to the server for processing
+  JOB_ACCEPTED = "job_accepted", // Server → Client: Confirms that a job has been accepted for processing
+  JOB_AVAILABLE = "job_available", // Server → Workers: Announces that a job is available for processing
+  CLAIM_JOB = "claim_job", // Worker → Server: Claims a job for processing
+  JOB_ASSIGNED = "job_assigned", // Server → Worker: Assigns a job to a worker
+  UPDATE_JOB_PROGRESS = "update_job_progress", // Worker → Server -> Client: Updates the progress of a job it's processing
+  COMPLETE_JOB = "complete_job", // Worker → Server -> Client: Notifies that a job has been completed successfully
+  FAIL_JOB = "fail_job", // Worker → Server: Notifies that a job has failed
 
   // STATUS_MESSAGES
   // 1. Renamed from GET_JOB_STATUS to follow a consistent request-response naming pattern
-  REQUEST_JOB_STATUS = "request_job_status",       // Client → Server: Requests the current status of a specific job
-  // 1. Keep the old name for backward compatibility
-  GET_JOB_STATUS = "get_job_status",              // Alias for REQUEST_JOB_STATUS (backward compatibility)
+  REQUEST_JOB_STATUS = "request_job_status", // Client → Server: Requests the current status of a specific job
   // 1. Renamed from JOB_STATUS to follow a consistent request-response naming pattern
-  RESPONSE_JOB_STATUS = "response_job_status",    // Server → Client: Responds with the current status of a requested job
-  // 1. Keep the old name for backward compatibility
-  JOB_STATUS = "job_status",                      // Alias for RESPONSE_JOB_STATUS (backward compatibility)
+  RESPONSE_JOB_STATUS = "response_job_status", // Server → Client: Responds with the current status of a requested job                  // Alias for RESPONSE_JOB_STATUS (backward compatibility)
 
   // GENERAL STATUS MESSAGES
-  // 2. Renamed from GET_STATS to follow a consistent request-response naming pattern
-  REQUEST_STATS = "request_stats",                // Client → Server: Requests system statistics
-  // 2. Keep the old name for backward compatibility
-  GET_STATS = "get_stats",                        // Alias for REQUEST_STATS (backward compatibility)
+  // 2. Renamed from REQUEST_STATS to follow a consistent request-response naming pattern
+  REQUEST_STATS = "request_stats", // Client → Server: Requests system statistics
   // 2. Renamed from STATS_RESPONSE to follow a consistent request-response naming pattern
-  RESPONSE_STATS = "response_stats",              // Server → Client: Responds with system statistics
-  // 2. Keep the old name for backward compatibility
-  STATS_RESPONSE = "stats_response",              // Alias for RESPONSE_STATS (backward compatibility)
-  
+  RESPONSE_STATS = "response_stats", // Server → Client: Responds with system statistics
+
   // 3. CLIENT_SUBSCRIBE_ALL_STATS_FROM_SERVER
-  SUBSCRIBE_STATS = "subscribe_stats",            // Client → Server: Subscribes to receive periodic system statistics
+  SUBSCRIBE_STATS = "subscribe_stats", // Client → Server: Subscribes to receive periodic system statistics
   // SERVER_CONFIRM_SUBSCRIPTION_TO_CLIENT
   SUBSCRIPTION_CONFIRMED = "subscription_confirmed", // Server → Client: Confirms a client's subscription request
   // 3. SERVER_BROADCAST_STATS_TO_CLIENTS
-  STATS_BROADCAST = "stats_broadcast",            // Server → Clients: Broadcasts system statistics to subscribed clients
+  STATS_BROADCAST = "stats_broadcast", // Server → Clients: Broadcasts system statistics to subscribed clients
 
   // JOB SPECIFIC MESSAGES
   // 4. CLIENT_SUBSCRIBE_JOB_ALERTS_FROM_SERVER
-  SUBSCRIBE_JOB = "subscribe_job",                // Client → Server: Subscribes to receive updates for a specific job
+  SUBSCRIBE_JOB = "subscribe_job", // Client → Server: Subscribes to receive updates for a specific job
   // 4. SERVER_CONFIRM_JOB_NOTIFICATIONS_SUBSCRIBED_TO_CLIENT
   JOB_NOTIFICATIONS_SUBSCRIBED = "job_notifications_subscribed", // Server → Client: Confirms subscription to job notifications
 
@@ -145,7 +137,7 @@ export interface SubmitJobMessage extends BaseMessage {
  * Message to get the status of a job
  */
 export interface GetJobStatusMessage extends BaseMessage {
-  type: MessageType.GET_JOB_STATUS;
+  type: MessageType.REQUEST_JOB_STATUS;
   job_id: string;
   timestamp?: number;
 }
@@ -162,14 +154,16 @@ export interface RegisterWorkerMessage extends BaseMessage {
 
 /**
  * Message to update job progress
+ *
+ * This message is used for both worker-to-server and server-to-client communication
+ * regarding job progress updates.
  */
 export interface UpdateJobProgressMessage extends BaseMessage {
   type: MessageType.UPDATE_JOB_PROGRESS;
   job_id: string;
-  machine_id: string;
-  gpu_id: number;
-  progress: number;
-  status: string;
+  worker_id: string;
+  progress: number; // Value between 0-100
+  status: string; // Default: "processing"
   message?: string;
   timestamp?: number;
 }
@@ -205,7 +199,7 @@ export interface JobAcceptedMessage extends BaseMessage {
  * Message with job status information
  */
 export interface JobStatusMessage extends BaseMessage {
-  type: MessageType.JOB_STATUS;
+  type: MessageType.RESPONSE_JOB_STATUS;
   job_id: string;
   status: string;
   progress?: number;
@@ -293,7 +287,7 @@ export interface SubscribeStatsMessage extends BaseMessage {
  * Message to request current stats
  */
 export interface GetStatsMessage extends BaseMessage {
-  type: MessageType.GET_STATS;
+  type: MessageType.REQUEST_STATS;
   timestamp?: number;
 }
 
@@ -405,7 +399,7 @@ export interface ResponseStatsMessage extends BaseMessage {
  * @deprecated Use RequestJobStatusMessage instead
  */
 export interface GetJobStatusMessage extends BaseMessage {
-  type: MessageType.GET_JOB_STATUS;
+  type: MessageType.REQUEST_JOB_STATUS;
   job_id: string;
   timestamp?: number;
 }
@@ -415,7 +409,7 @@ export interface GetJobStatusMessage extends BaseMessage {
  * @deprecated Use ResponseJobStatusMessage instead
  */
 export interface JobStatusMessage extends BaseMessage {
-  type: MessageType.JOB_STATUS;
+  type: MessageType.RESPONSE_JOB_STATUS;
   job_id: string;
   status: string;
   progress?: number;
@@ -429,7 +423,7 @@ export interface JobStatusMessage extends BaseMessage {
  * @deprecated Use RequestStatsMessage instead
  */
 export interface GetStatsMessage extends BaseMessage {
-  type: MessageType.GET_STATS;
+  type: MessageType.REQUEST_STATS;
   timestamp?: number;
 }
 
@@ -438,7 +432,7 @@ export interface GetStatsMessage extends BaseMessage {
  * @deprecated Use ResponseStatsMessage instead
  */
 export interface StatsResponseMessage extends BaseMessage {
-  type: MessageType.STATS_RESPONSE;
+  type: MessageType.RESPONSE_STATS;
   stats: Record<string, any>;
   timestamp?: number;
 }
@@ -484,7 +478,7 @@ export interface FailJobMessage extends BaseMessage {
  * Stats response message
  */
 export interface StatsResponseMessage extends BaseMessage {
-  type: MessageType.STATS_RESPONSE;
+  type: MessageType.RESPONSE_STATS;
   stats: Record<string, any>;
   timestamp?: number;
 }
